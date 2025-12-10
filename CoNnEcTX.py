@@ -3,487 +3,710 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
 import random
+from heapq import heappush, heappop
 import pandas as pd
 import json
 import zipfile
 import io
 import ast
-from copy import deepcopy
-import time
 
 # ============================================================================
 # Page Config and Initial Setup
 # ============================================================================
 st.set_page_config(
-    page_title="RL Connect-X Arena",
+    page_title="RL Connect X",
     layout="wide",
     initial_sidebar_state="expanded",
-    page_icon="🧠"
+    page_icon="🎮"
 )
 
-st.title("🧠 Genius RL Connect-X Arena")
+st.title("🧠 Pure RL Connect X Game")
 st.markdown("""
-Watch two Reinforcement Learning agents battle to master **Connect-X**! These agents use pure Q-learning with advanced techniques like **Experience Replay** and **Opponent Modeling** to develop their strategies from scratch.
+A **two-player Connect X game** solved using **Pure Reinforcement Learning** with self-play training.
 
-1.  **Configure the Game**: Set the grid size and win condition in the sidebar.
-2.  **Tune the Agents**: Adjust hyperparameters for each agent independently.
-3.  **Train**: Start the training process and watch their win rates evolve.
-4.  **Battle!**: Pit the trained agents against each other in a final showdown.
+1. **Configure Game**: Set board dimensions and win condition (X)
+2. **Train Agents**: Watch two RL agents learn through self-play
+3. **Play or Test**: Challenge the trained agent or watch it play!
+
+**No Minimax. No Tree Search. Just Pure RL Magic! 🚀**
 """)
 
 # ============================================================================
-# Game Environment Class
+# Connect X Game Environment
 # ============================================================================
 
-class ConnectX:
-    def __init__(self, grid_size=6, connect_n=4):
-        self.grid_size = grid_size
-        self.connect_n = connect_n
-        self.board = np.zeros((self.grid_size, self.grid_size), dtype=int)
-        self.current_player = 1
-        self.game_over = False
-        self.winner = None
-
+class ConnectXGame:
+    def __init__(self, rows=6, cols=7, win_length=4):
+        self.rows = rows
+        self.cols = cols
+        self.win_length = win_length
+        self.reset()
+    
     def reset(self):
-        self.board = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.board = np.zeros((self.rows, self.cols), dtype=int)
         self.current_player = 1
         self.game_over = False
         self.winner = None
+        self.last_move = None
         return self.get_state()
-
+    
     def get_state(self):
-        return tuple(self.board.flatten())
-
-    def get_available_actions(self):
-        return [c for c in range(self.grid_size) if self.board[0, c] == 0]
-
-    def make_move(self, column):
-        if self.game_over or column not in self.get_available_actions():
-            # Invalid move, penalize heavily and end game for this player
-            return self.get_state(), -20, True, 3 - self.current_player
-
-        # Find the lowest empty row in the chosen column
-        for r in range(self.grid_size - 1, -1, -1):
-            if self.board[r, column] == 0:
-                self.board[r, column] = self.current_player
+        """Convert board to tuple for hashing in Q-table"""
+        return tuple(map(tuple, self.board))
+    
+    def get_valid_moves(self):
+        """Returns list of valid column indices"""
+        return [col for col in range(self.cols) if self.board[0, col] == 0]
+    
+    def make_move(self, col):
+        """Drop piece in column, returns (new_state, reward, done, info)"""
+        if col not in self.get_valid_moves():
+            return self.get_state(), -100, True, {'invalid': True}
+        
+        # Drop piece
+        for row in range(self.rows - 1, -1, -1):
+            if self.board[row, col] == 0:
+                self.board[row, col] = self.current_player
+                self.last_move = (row, col)
                 break
-
-        if self._check_win(self.current_player):
+        
+        # Check win
+        if self._check_win(row, col):
             self.game_over = True
             self.winner = self.current_player
-            return self.get_state(), 100, True, self.winner
-
-        if len(self.get_available_actions()) == 0:
+            reward = 100  # Win!
+            return self.get_state(), reward, True, {'winner': self.current_player}
+        
+        # Check draw
+        if len(self.get_valid_moves()) == 0:
             self.game_over = True
-            self.winner = 0  # Draw
-            return self.get_state(), 10, True, 0
-
-        self.current_player = 3 - self.current_player
-        return self.get_state(), -0.5, False, None # Small penalty for each move to encourage faster wins
-
-    def _check_win(self, player):
-        # Check horizontal, vertical, and diagonal connections
-        for r in range(self.grid_size):
-            for c in range(self.grid_size):
-                # Horizontal
-                if c <= self.grid_size - self.connect_n:
-                    if all(self.board[r, c+i] == player for i in range(self.connect_n)):
-                        return True
-                # Vertical
-                if r <= self.grid_size - self.connect_n:
-                    if all(self.board[r+i, c] == player for i in range(self.connect_n)):
-                        return True
-                # Positive Diagonal
-                if r <= self.grid_size - self.connect_n and c <= self.grid_size - self.connect_n:
-                    if all(self.board[r+i, c+i] == player for i in range(self.connect_n)):
-                        return True
-                # Negative Diagonal
-                if r <= self.grid_size - self.connect_n and c >= self.connect_n - 1:
-                    if all(self.board[r+i, c-i] == player for i in range(self.connect_n)):
-                        return True
+            reward = 0  # Draw
+            return self.get_state(), reward, True, {'draw': True}
+        
+        # Switch player
+        self.current_player = 3 - self.current_player  # Toggle 1<->2
+        return self.get_state(), 0, False, {}
+    
+    def _check_win(self, row, col):
+        """Check if last move resulted in a win"""
+        player = self.board[row, col]
+        directions = [(0,1), (1,0), (1,1), (1,-1)]  # horizontal, vertical, diagonals
+        
+        for dr, dc in directions:
+            count = 1
+            # Check positive direction
+            for i in range(1, self.win_length):
+                r, c = row + dr*i, col + dc*i
+                if 0 <= r < self.rows and 0 <= c < self.cols and self.board[r, c] == player:
+                    count += 1
+                else:
+                    break
+            # Check negative direction
+            for i in range(1, self.win_length):
+                r, c = row - dr*i, col - dc*i
+                if 0 <= r < self.rows and 0 <= c < self.cols and self.board[r, c] == player:
+                    count += 1
+                else:
+                    break
+            
+            if count >= self.win_length:
+                return True
         return False
+    
+    def render(self):
+        """Returns matplotlib figure of current board"""
+        fig, ax = plt.subplots(figsize=(8, 7))
+        
+        # Draw board
+        for row in range(self.rows):
+            for col in range(self.cols):
+                circle = plt.Circle((col, self.rows - 1 - row), 0.4, 
+                                   color='white', ec='black', linewidth=2)
+                ax.add_patch(circle)
+                
+                if self.board[row, col] == 1:
+                    piece = plt.Circle((col, self.rows - 1 - row), 0.35, color='red')
+                    ax.add_patch(piece)
+                elif self.board[row, col] == 2:
+                    piece = plt.Circle((col, self.rows - 1 - row), 0.35, color='yellow')
+                    ax.add_patch(piece)
+        
+        ax.set_xlim(-0.5, self.cols - 0.5)
+        ax.set_ylim(-0.5, self.rows - 0.5)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        
+        title = "Connect X Game"
+        if self.game_over:
+            if self.winner:
+                title = f"Player {self.winner} Wins!"
+            else:
+                title = "Draw!"
+        else:
+            title = f"Player {self.current_player}'s Turn"
+        ax.set_title(title, fontsize=16, fontweight='bold')
+        
+        return fig
 
 # ============================================================================
-# "Genius" RL Agent Class
+# Pure RL Agent (Q-Learning with Self-Play)
 # ============================================================================
 
-class ConnectXAgent:
-    def __init__(self, player_id, lr=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.999, epsilon_min=0.01):
+class PureRLAgent:
+    def __init__(self, player_id, lr=0.1, gamma=0.99, epsilon_decay=0.9995, epsilon_min=0.05):
         self.player_id = player_id
         self.lr = lr
         self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_decay = epsilon_decay
+        self.epsilon = 1.0
         self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
         
         self.q_table = {}
-        self.experience_replay = deque(maxlen=20000)
-        self.opponent_model = {}  # Learns opponent's likely moves from a state
-
-        # Stats
+        self.init_q_value = 0.0
+        
+        # Advanced features
+        self.experience_buffer = deque(maxlen=50000)
+        self.model = {}  # State-action model
+        self.priority_queue = []
+        self.in_queue = set()
+        
+        # Tracking
+        self.episode_rewards = []
         self.wins = 0
         self.losses = 0
         self.draws = 0
-
+        self.invalid_moves = 0
+        
+        # State visit counts for curiosity
+        self.visit_counts = {}
+        self.curiosity_weight = 0.5
+        self.curiosity_decay = 0.9995
+    
     def get_q_value(self, state, action):
-        return self.q_table.get((state, action), 0.0)
-
-    def choose_action(self, state, available_actions, training=True):
-        if not available_actions:
+        return self.q_table.get((state, action), self.init_q_value)
+    
+    def choose_action(self, state, valid_moves, training=True):
+        """Epsilon-greedy action selection with pure RL"""
+        if not valid_moves:
             return None
         
         if training and random.random() < self.epsilon:
-            return random.choice(available_actions)
+            return random.choice(valid_moves)
         
-        # Genius move: Consider opponent's likely counter-move
-        # This is a simple form of opponent modeling
-        best_action = None
-        best_q_val = -float('inf')
-
-        for action in available_actions:
-            q_val = self.get_q_value(state, action)
-            
-            # Simulate my move to predict opponent's response
-            # This is a one-step lookahead, a hallmark of smarter play
-            if training and self.opponent_model:
-                sim_board = list(state)
-                # Find where my piece would land (simplified)
-                # This part is complex, so we'll approximate
-                # A full simulation would be better but this is a good RL-based approach
-                # For now, we just use the direct Q-value
-                pass
-
-            if q_val > best_q_val:
-                best_q_val = q_val
-                best_action = action
+        # Greedy: pick best known action
+        q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+        max_q = max(q_values, key=lambda x: x[1])[1]
+        best_moves = [move for move, q in q_values if q == max_q]
+        return random.choice(best_moves)
+    
+    def get_intrinsic_reward(self, state):
+        """Curiosity-driven exploration bonus"""
+        visit_count = self.visit_counts.get(state, 0) + 1
+        self.visit_counts[state] = visit_count
         
-        # If multiple actions have the same max Q-value, pick one randomly
-        if best_action is None:
-             return random.choice(available_actions)
-
-        best_actions = [a for a in available_actions if self.get_q_value(state, a) == best_q_val]
-        return random.choice(best_actions)
-
-    def update_q_table(self, state, action, reward, next_state, done, next_available_actions):
-        # Standard Q-learning update
+        # Curiosity bonus decreases with visits
+        intrinsic = (self.curiosity_weight / np.sqrt(visit_count))
+        return intrinsic
+    
+    def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
+        """Q-learning update with intrinsic motivation"""
+        # Add curiosity bonus
+        intrinsic_reward = self.get_intrinsic_reward(state)
+        total_reward = reward + intrinsic_reward
+        
         current_q = self.get_q_value(state, action)
-        if done:
-            max_next_q = 0
-        else:
-            max_next_q = max([self.get_q_value(next_state, a) for a in next_available_actions], default=0)
         
-        new_q = current_q + self.lr * (reward + self.gamma * max_next_q - current_q)
+        if done:
+            target = total_reward
+        else:
+            # Max Q of next state
+            if next_valid_moves:
+                max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
+            else:
+                max_next_q = 0
+            target = total_reward + self.gamma * max_next_q
+        
+        # Update
+        new_q = current_q + self.lr * (target - current_q)
         self.q_table[(state, action)] = new_q
-
-    def learn_from_replay(self, batch_size=64):
-        if len(self.experience_replay) < batch_size:
+        
+        # Store in model
+        self.model[(state, action)] = (next_state, total_reward, done)
+        
+        # Prioritized sweeping
+        td_error = abs(target - current_q)
+        if td_error > 0.1:
+            self.prioritized_update(state, action, td_error)
+        
+        return td_error
+    
+    def prioritized_update(self, state, action, priority, max_queue_size=1000):
+        if (state, action) not in self.in_queue:
+            if len(self.priority_queue) >= max_queue_size:
+                heappop(self.priority_queue)
+            heappush(self.priority_queue, (-abs(priority), state, action))
+            self.in_queue.add((state, action))
+    
+    def planning_step(self, n_steps=10):
+        """Dyna-Q style planning"""
+        for _ in range(min(n_steps, len(self.priority_queue))):
+            if not self.priority_queue:
+                break
+            
+            _, state, action = heappop(self.priority_queue)
+            self.in_queue.discard((state, action))
+            
+            if (state, action) in self.model:
+                next_state, reward, done = self.model[(state, action)]
+                current_q = self.get_q_value(state, action)
+                
+                if done:
+                    target = reward
+                else:
+                    # We don't have valid moves stored, so assume all moves possible
+                    max_next_q = max([self.get_q_value(next_state, a) for a in range(7)], default=0)
+                    target = reward + self.gamma * max_next_q
+                
+                new_q = current_q + self.lr * (target - current_q)
+                self.q_table[(state, action)] = new_q
+    
+    def experience_replay(self, batch_size=32):
+        """Learn from past experiences"""
+        if len(self.experience_buffer) < batch_size:
             return
         
-        minibatch = random.sample(self.experience_replay, batch_size)
-        for state, action, reward, next_state, done, next_actions in minibatch:
-            self.update_q_table(state, action, reward, next_state, done, next_actions)
-
-    def update_opponent_model(self, state, opponent_action):
-        if state not in self.opponent_model:
-            self.opponent_model[state] = {}
-        self.opponent_model[state][opponent_action] = self.opponent_model[state].get(opponent_action, 0) + 1
-
+        batch = random.sample(self.experience_buffer, batch_size)
+        for state, action, reward, next_state, done, next_valid_moves in batch:
+            self.update_q_value(state, action, reward, next_state, next_valid_moves, done)
+    
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
-    def reset_stats(self):
-        self.wins = 0
-        self.losses = 0
-        self.draws = 0
-
-# ============================================================================
-# Training & Game Logic
-# ============================================================================
-
-def play_game(env, agent1, agent2, training=True):
-    env.reset()
-    history = []
+        self.curiosity_weight = max(0.01, self.curiosity_weight * self.curiosity_decay)
     
-    while not env.game_over:
-        current_agent = agent1 if env.current_player == 1 else agent2
-        opponent_agent = agent2 if env.current_player == 1 else agent1
+    def record_result(self, result):
+        """Track game outcomes"""
+        if result == 'win':
+            self.wins += 1
+        elif result == 'loss':
+            self.losses += 1
+        elif result == 'draw':
+            self.draws += 1
+
+# ============================================================================
+# Self-Play Training
+# ============================================================================
+
+def train_self_play(game, agent1, agent2, max_moves=100):
+    """Train two agents against each other"""
+    state = game.reset()
+    history = []  # Store (state, action, player) for later reward assignment
+    
+    for move_num in range(max_moves):
+        current_player = game.current_player
+        agent = agent1 if current_player == 1 else agent2
         
-        state = env.get_state()
-        available_actions = env.get_available_actions()
-        action = current_agent.choose_action(state, available_actions, training)
-        
-        if action is None:
+        valid_moves = game.get_valid_moves()
+        if not valid_moves:
             break
-
-        next_state, reward, done, winner = env.make_move(action)
         
-        # Store experience for the current player
-        # The reward for the opponent will be the negative of the current player's reward
-        history.append({
-            'state': state, 'action': action, 'reward': reward, 
-            'next_state': next_state, 'done': done, 'player': current_agent.player_id,
-            'next_actions': env.get_available_actions()
-        })
+        # Agent chooses action
+        action = agent.choose_action(state, valid_moves, training=True)
+        history.append((state, action, current_player))
         
-        # Opponent modeling
-        if training:
-            opponent_agent.update_opponent_model(state, action)
-
-    # Post-game learning
-    if training:
-        final_reward_p1 = 0
-        if winner == 1: final_reward_p1 = 100
-        elif winner == 2: final_reward_p1 = -100
-        elif winner == 0: final_reward_p1 = 10
-
-        for move in reversed(history):
-            reward = final_reward_p1 if move['player'] == 1 else -final_reward_p1
-            agent = agent1 if move['player'] == 1 else agent2
+        # Execute move
+        next_state, reward, done, info = game.make_move(action)
+        
+        if 'invalid' in info:
+            agent.invalid_moves += 1
+            return 'invalid', move_num
+        
+        # Store experience for current agent
+        next_valid_moves = game.get_valid_moves() if not done else []
+        agent.experience_buffer.append((state, action, reward, next_state, done, next_valid_moves))
+        
+        if done:
+            # Assign rewards to both agents
+            if 'winner' in info:
+                winner = info['winner']
+                # Winner gets +100, loser gets -100
+                for i, (s, a, p) in enumerate(history):
+                    r = 100 if p == winner else -100
+                    agt = agent1 if p == 1 else agent2
+                    ns = history[i+1][0] if i+1 < len(history) else next_state
+                    nvm = []  # Game is done
+                    agt.update_q_value(s, a, r, ns, nvm, True)
+                
+                # Record results
+                if winner == 1:
+                    agent1.record_result('win')
+                    agent2.record_result('loss')
+                    result = 'p1_win'
+                else:
+                    agent1.record_result('loss')
+                    agent2.record_result('win')
+                    result = 'p2_win'
+            else:  # Draw
+                for s, a, p in history:
+                    agt = agent1 if p == 1 else agent2
+                    agt.update_q_value(s, a, 0, next_state, [], True)
+                agent1.record_result('draw')
+                agent2.record_result('draw')
+                result = 'draw'
             
-            # Add to experience replay buffer
-            agent.experience_replay.append((
-                move['state'], move['action'], reward, move['next_state'], 
-                move['done'], move['next_actions']
-            ))
+            # Experience replay and planning
+            agent1.experience_replay(batch_size=32)
+            agent2.experience_replay(batch_size=32)
+            agent1.planning_step(n_steps=20)
+            agent2.planning_step(n_steps=20)
             
-            # Learn from a batch of experiences
-            agent.learn_from_replay()
-
-    return winner
-
-# ============================================================================
-# Visualization
-# ============================================================================
-
-def visualize_board(board, title="Game Board"):
-    fig, ax = plt.subplots(figsize=(6, 6))
-    n = board.shape[0]
-    ax.set_facecolor('#2E86C1')
-
-    for r in range(n):
-        for c in range(n):
-            if board[r, c] == 1:
-                color = 'red'
-            elif board[r, c] == 2:
-                color = 'yellow'
-            else:
-                color = 'white'
-            ax.add_patch(plt.Circle((c + 0.5, n - r - 0.5), 0.4, color=color))
-
-    ax.set_xlim(0, n)
-    ax.set_ylim(0, n)
-    ax.set_aspect('equal')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_title(title, fontsize=16, fontweight='bold', color='white')
-    return fig
+            return result, move_num
+        
+        state = next_state
+    
+    return 'timeout', max_moves
 
 # ============================================================================
-# Save/Load Utility Functions
+# Save/Load Functions
 # ============================================================================
 
 def serialize_q_table(q_table):
-    return {str(k): v for k, v in q_table.items()}
+    serialized = {}
+    for key, value in q_table.items():
+        serialized[str(key)] = value
+    return serialized
 
 def deserialize_q_table(serialized_q):
-    return {ast.literal_eval(k): v for k, v in serialized_q.items()}
+    q_table = {}
+    for key_str, value in serialized_q.items():
+        key_tuple = ast.literal_eval(key_str)
+        q_table[key_tuple] = value
+    return q_table
 
-def create_agents_zip(agent1, agent2, config):
-    agent1_state = {"q_table": serialize_q_table(agent1.q_table), "epsilon": agent1.epsilon, "wins": agent1.wins, "losses": agent1.losses, "draws": agent1.draws}
-    agent2_state = {"q_table": serialize_q_table(agent2.q_table), "epsilon": agent2.epsilon, "wins": agent2.wins, "losses": agent2.losses, "draws": agent2.draws}
+def create_brain_zip(agent1, agent2, game_config):
+    agent1_state = {
+        "q_table": serialize_q_table(agent1.q_table),
+        "epsilon": agent1.epsilon,
+        "lr": agent1.lr,
+        "gamma": agent1.gamma,
+        "wins": agent1.wins,
+        "losses": agent1.losses,
+        "draws": agent1.draws,
+        "model": {str(k): v for k, v in agent1.model.items()}
+    }
+    
+    agent2_state = {
+        "q_table": serialize_q_table(agent2.q_table),
+        "epsilon": agent2.epsilon,
+        "lr": agent2.lr,
+        "gamma": agent2.gamma,
+        "wins": agent2.wins,
+        "losses": agent2.losses,
+        "draws": agent2.draws,
+        "model": {str(k): v for k, v in agent2.model.items()}
+    }
+    
+    config_state = {
+        "rows": game_config['rows'],
+        "cols": game_config['cols'],
+        "win_length": game_config['win_length']
+    }
     
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("agent1_brain.json", json.dumps(agent1_state))
         zf.writestr("agent2_brain.json", json.dumps(agent2_state))
-        zf.writestr("game_config.json", json.dumps(config))
+        zf.writestr("game_config.json", json.dumps(config_state))
+    
     buffer.seek(0)
     return buffer
 
-def load_agents_from_zip(uploaded_file, agent1_params, agent2_params):
+def load_brain_from_zip(uploaded_file):
     try:
         with zipfile.ZipFile(uploaded_file, "r") as zf:
-            agent1_state = json.loads(zf.read("agent1_brain.json"))
-            agent2_state = json.loads(zf.read("agent2_brain.json"))
-            config = json.loads(zf.read("game_config.json"))
+            agent1_json = zf.read("agent1_brain.json")
+            agent2_json = zf.read("agent2_brain.json")
+            config_json = zf.read("game_config.json")
             
-            agent1 = ConnectXAgent(1, **agent1_params)
+            agent1_state = json.loads(agent1_json)
+            agent2_state = json.loads(agent2_json)
+            config_state = json.loads(config_json)
+            
+            # Reconstruct agents
+            agent1 = PureRLAgent(1, agent1_state['lr'], agent1_state['gamma'], 0.9995, 0.05)
             agent1.q_table = deserialize_q_table(agent1_state['q_table'])
-            agent1.epsilon = agent1_state.get('epsilon', 1.0)
-            agent1.wins = agent1_state.get('wins', 0)
-            agent1.losses = agent1_state.get('losses', 0)
-            agent1.draws = agent1_state.get('draws', 0)
+            agent1.model = deserialize_q_table(agent1_state['model'])
+            agent1.epsilon = agent1_state['epsilon']
+            agent1.wins = agent1_state['wins']
+            agent1.losses = agent1_state['losses']
+            agent1.draws = agent1_state['draws']
             
-            agent2 = ConnectXAgent(2, **agent2_params)
+            agent2 = PureRLAgent(2, agent2_state['lr'], agent2_state['gamma'], 0.9995, 0.05)
             agent2.q_table = deserialize_q_table(agent2_state['q_table'])
-            agent2.epsilon = agent2_state.get('epsilon', 1.0)
-            agent2.wins = agent2_state.get('wins', 0)
-            agent2.losses = agent2_state.get('losses', 0)
-            agent2.draws = agent2_state.get('draws', 0)
+            agent2.model = deserialize_q_table(agent2_state['model'])
+            agent2.epsilon = agent2_state['epsilon']
+            agent2.wins = agent2_state['wins']
+            agent2.losses = agent2_state['losses']
+            agent2.draws = agent2_state['draws']
             
-            return agent1, agent2, config
+            return agent1, agent2, config_state
     except Exception as e:
-        st.error(f"Failed to load agents: {e}")
+        st.error(f"Error loading brain: {e}")
         return None, None, None
 
 # ============================================================================
 # Streamlit UI
 # ============================================================================
 
-st.sidebar.header("⚙️ Game & Agent Controls")
+st.sidebar.header("⚙️ Game Controls")
 
 with st.sidebar.expander("1. Game Configuration", expanded=True):
-    grid_size = st.slider("Grid Size", 3, 10, 6)
-    connect_n = st.slider("Connect 'X' to Win", 2, 5, 4)
-    if connect_n > grid_size:
-        st.warning("Win condition cannot be larger than the grid size.")
-        connect_n = grid_size
-    st.info(f"Playing on a {grid_size}x{grid_size} grid. Need {connect_n} in a row to win.")
+    rows = st.number_input("Board Rows", min_value=4, max_value=20, value=6, step=1)
+    cols = st.number_input("Board Columns", min_value=4, max_value=20, value=7, step=1)
+    win_length = st.slider("Win Length (X)", min_value=2, max_value=5, value=4, step=1)
+    
+    if st.button("Create New Game", use_container_width=True):
+        st.session_state.game_config = {
+            'rows': rows,
+            'cols': cols,
+            'win_length': win_length
+        }
+        st.session_state.game = ConnectXGame(rows, cols, win_length)
+        st.session_state.agent1 = None
+        st.session_state.agent2 = None
+        st.session_state.training_history = None
+        st.toast("New game created!", icon="🎮")
+        st.rerun()
 
-with st.sidebar.expander("2. Agent 1 (Red) Hyperparameters", expanded=True):
-    lr1 = st.slider("Learning Rate α₁", 0.01, 1.0, 0.1, 0.01, key="lr1")
-    gamma1 = st.slider("Discount Factor γ₁", 0.8, 0.99, 0.9, 0.01, key="gamma1")
-    epsilon_decay1 = st.slider("Epsilon Decay₁", 0.99, 0.9999, 0.9995, 0.0001, format="%.4f", key="ed1")
+with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
+    lr = st.slider("Learning Rate (α)", 0.01, 1.0, 0.1, 0.01)
+    gamma = st.slider("Discount Factor (γ)", 0.9, 0.999, 0.99, 0.001)
+    epsilon_decay = st.slider("Epsilon Decay", 0.99, 0.9999, 0.9995, 0.0001, format="%.4f")
+    epsilon_min = st.slider("Min Epsilon (ε)", 0.01, 0.3, 0.05, 0.01)
 
-with st.sidebar.expander("3. Agent 2 (Yellow) Hyperparameters", expanded=True):
-    lr2 = st.slider("Learning Rate α₂", 0.01, 1.0, 0.1, 0.01, key="lr2")
-    gamma2 = st.slider("Discount Factor γ₂", 0.8, 0.99, 0.9, 0.01, key="gamma2")
-    epsilon_decay2 = st.slider("Epsilon Decay₂", 0.99, 0.9999, 0.9995, 0.0001, format="%.4f", key="ed2")
+with st.sidebar.expander("3. Training Configuration", expanded=True):
+    episodes = st.number_input("Training Episodes", 100, 1000000, 5000, 100)
+    max_moves = st.number_input("Max Moves per Game", 10, 1000, 100, 10)
+    early_stop_rate = st.slider("Early Stop (Win Rate)", 0.7, 0.99, 0.85, 0.01)
 
-with st.sidebar.expander("4. Training Configuration", expanded=True):
-    episodes = st.number_input("Training Episodes", 100, 100000, 5000, 100)
-    update_freq = st.number_input("Update Dashboard Every N Games", 10, 1000, 100, 10)
-
-with st.sidebar.expander("5. Brain Storage (Save/Load)", expanded=False):
-    if 'agent1' in st.session_state:
-        game_config = {"grid_size": grid_size, "connect_n": connect_n}
-        zip_buffer = create_agents_zip(st.session_state.agent1, st.session_state.agent2, game_config)
+with st.sidebar.expander("4. Brain Storage", expanded=False):
+    if 'agent1' in st.session_state and st.session_state.agent1 is not None:
+        zip_buffer = create_brain_zip(
+            st.session_state.agent1, 
+            st.session_state.agent2,
+            st.session_state.game_config
+        )
         st.download_button(
-            label="💾 Download Agent Brains (.zip)", data=zip_buffer,
-            file_name="connectx_brains.zip", mime="application/zip", use_container_width=True
+            label="💾 Download Agents (.zip)",
+            data=zip_buffer,
+            file_name="connect_x_agents.zip",
+            mime="application/zip",
+            use_container_width=True
         )
     else:
         st.warning("Train agents first to download.")
     
-    uploaded_file = st.file_uploader("Upload Agent Brains (.zip)", type="zip")
-    if uploaded_file:
-        if st.button("Load Agent Brains", use_container_width=True):
-            agent1_params = {'lr': lr1, 'gamma': gamma1, 'epsilon_decay': epsilon_decay1}
-            agent2_params = {'lr': lr2, 'gamma': gamma2, 'epsilon_decay': epsilon_decay2}
-            a1, a2, cfg = load_agents_from_zip(uploaded_file, agent1_params, agent2_params)
-            if a1:
-                st.session_state.agent1 = a1
-                st.session_state.agent2 = a2
-                st.session_state.env = ConnectX(cfg['grid_size'], cfg['connect_n'])
-                st.session_state.training_history = None
-                st.toast("Agent Brains Restored!", icon="🧠")
+    uploaded_file = st.file_uploader("Upload Brain (.zip)", type="zip")
+    if uploaded_file is not None:
+        if st.button("Load Agents", use_container_width=True):
+            agent1, agent2, config = load_brain_from_zip(uploaded_file)
+            if agent1:
+                st.session_state.agent1 = agent1
+                st.session_state.agent2 = agent2
+                st.session_state.game_config = config
+                st.session_state.game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
+                st.toast("Agents loaded!", icon="🧠")
                 st.rerun()
 
-train_button = st.sidebar.button("🚀 Start Training", use_container_width=True, type="primary")
+train_button = st.sidebar.button("🚀 Train Agents (Self-Play)", use_container_width=True, type="primary")
 
-if st.sidebar.button("🧹 Clear & Reset", use_container_width=True):
-    keys_to_clear = ['agent1', 'agent2', 'training_history', 'env']
-    for key in keys_to_clear:
+st.sidebar.divider()
+
+if st.sidebar.button("Clear Memory", use_container_width=True):
+    for key in ['game', 'agent1', 'agent2', 'training_history', 'game_config']:
         if key in st.session_state:
             del st.session_state[key]
+    st.toast("Memory cleared!", icon="🧼")
     st.rerun()
 
 # ============================================================================
 # Main Area
 # ============================================================================
 
-# Initialize environment and agents
-if 'env' not in st.session_state:
-    st.session_state.env = ConnectX(grid_size, connect_n)
-env = st.session_state.env
-
-if 'agent1' not in st.session_state:
-    st.session_state.agent1 = ConnectXAgent(1, lr1, gamma1, epsilon_decay=epsilon_decay1)
-    st.session_state.agent2 = ConnectXAgent(2, lr2, gamma2, epsilon_decay=epsilon_decay2)
-agent1 = st.session_state.agent1
-agent2 = st.session_state.agent2
-
-# Display stats
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Agent 1 (Red) Wins", agent1.wins)
-    st.caption(f"Q-States: {len(agent1.q_table):,}")
-with col2:
-    st.metric("Agent 2 (Yellow) Wins", agent2.wins)
-    st.caption(f"Q-States: {len(agent2.q_table):,}")
-with col3:
-    st.metric("Draws", agent1.draws)
-
-# Training Loop
-if train_button:
-    st.subheader("🧠 Training in Progress...")
-    status_container = st.empty()
-    progress_bar = st.progress(0)
+if 'game_config' not in st.session_state:
+    st.info("👈 Configure and create a game using the sidebar to begin!")
+else:
+    config = st.session_state.game_config
+    game = st.session_state.game
     
-    agent1.reset_stats()
-    agent2.reset_stats()
+    # Initialize agents if needed
+    if 'agent1' not in st.session_state or st.session_state.agent1 is None:
+        st.session_state.agent1 = PureRLAgent(1, lr, gamma, epsilon_decay, epsilon_min)
+        st.session_state.agent2 = PureRLAgent(2, lr, gamma, epsilon_decay, epsilon_min)
     
-    history = {'agent1_wins': [], 'agent2_wins': [], 'draws': []}
+    agent1 = st.session_state.agent1
+    agent2 = st.session_state.agent2
     
-    for episode in range(1, episodes + 1):
-        winner = play_game(env, agent1, agent2, training=True)
-        if winner == 1: agent1.wins += 1
-        elif winner == 2: agent2.wins += 1
-        else: agent1.draws += 1; agent2.draws += 1
+    # Training
+    if train_button:
+        st.subheader("🏋️ Training in Progress...")
         
-        agent1.decay_epsilon()
-        agent2.decay_epsilon()
+        progress_bar = st.progress(0)
+        status_container = st.empty()
+        chart_container = st.empty()
         
-        if episode % update_freq == 0:
-            history['agent1_wins'].append(agent1.wins)
-            history['agent2_wins'].append(agent2.wins)
-            history['draws'].append(agent1.draws)
-
-            progress = episode / episodes
-            progress_bar.progress(progress)
+        p1_wins, p2_wins, draws = 0, 0, 0
+        recent_results = deque(maxlen=100)
+        win_rates = []
+        
+        for episode in range(1, episodes + 1):
+            result, moves = train_self_play(game, agent1, agent2, max_moves)
             
-            status_text = f"""
-            **Game {episode}/{episodes}** ({progress*100:.1f}%)
-            - **Agent 1 (Red):** Wins: {agent1.wins} | ε: {agent1.epsilon:.4f}
-            - **Agent 2 (Yellow):** Wins: {agent2.wins} | ε: {agent2.epsilon:.4f}
-            - **Draws:** {agent1.draws}
-            """
-            status_container.markdown(status_text)
-
-    st.session_state.training_history = history
-    st.toast("Training Complete!", icon="🎉")
-    st.rerun()
-
-# Display charts and final game
-if 'training_history' in st.session_state and st.session_state.training_history:
-    st.subheader("📈 Training Performance")
-    history = st.session_state.training_history
-    df = pd.DataFrame(history)
-    df['episode_chunk'] = range(update_freq, episodes + 1, update_freq)
+            if result == 'p1_win':
+                p1_wins += 1
+                recent_results.append(1)
+            elif result == 'p2_win':
+                p2_wins += 1
+                recent_results.append(2)
+            elif result == 'draw':
+                draws += 1
+                recent_results.append(0)
+            
+            agent1.decay_epsilon()
+            agent2.decay_epsilon()
+            
+            # Calculate win rates
+            if len(recent_results) > 0:
+                p1_wr = sum(1 for r in recent_results if r == 1) / len(recent_results)
+                p2_wr = sum(1 for r in recent_results if r == 2) / len(recent_results)
+            else:
+                p1_wr = p2_wr = 0
+            
+            win_rates.append({'episode': episode, 'p1': p1_wr, 'p2': p2_wr})
+            
+            # Update UI every 50 episodes
+            if episode % 50 == 0 or episode == 1:
+                status_md = f"""
+                | Metric | Value |
+                |--------|-------|
+                | **Episode** | `{episode}` / `{episodes}` |
+                | **Agent 1 Epsilon** | `{agent1.epsilon:.4f}` |
+                | **Agent 2 Epsilon** | `{agent2.epsilon:.4f}` |
+                | **P1 Q-Table Size** | `{len(agent1.q_table):,}` |
+                | **P2 Q-Table Size** | `{len(agent2.q_table):,}` |
+                | **P1 Wins** | `{p1_wins}` ({p1_wr:.1%}) |
+                | **P2 Wins** | `{p2_wins}` ({p2_wr:.1%}) |
+                | **Draws** | `{draws}` |
+                """
+                status_container.markdown(status_md)
+                progress_bar.progress(episode / episodes)
+                
+                # Plot win rates
+                if len(win_rates) > 10:
+                    df = pd.DataFrame(win_rates)
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    ax.plot(df['episode'], df['p1'], label='Agent 1', color='red', linewidth=2)
+                    ax.plot(df['episode'], df['p2'], label='Agent 2', color='yellow', linewidth=2)
+                    ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5)
+                    ax.set_xlabel('Episode')
+                    ax.set_ylabel('Win Rate (Last 100)')
+                    ax.set_ylim(0, 1)
+                    ax.legend()
+                    ax.grid(alpha=0.3)
+                    chart_container.pyplot(fig)
+                    plt.close()
+            
+            # Early stopping
+            if len(recent_results) >= 100 and (p1_wr > early_stop_rate or p2_wr > early_stop_rate):
+                st.success(f"🎉 Early stop at episode {episode}! Agent achieved {max(p1_wr, p2_wr):.1%} win rate!")
+                break
+        
+        st.session_state.training_history = {
+            'win_rates': win_rates,
+            'total_games': episode,
+            'p1_wins': p1_wins,
+            'p2_wins': p2_wins,
+            'draws': draws
+        }
+        st.rerun()
     
-    st.line_chart(df.set_index('episode_chunk'))
-
-    st.subheader("🤖 Final Battle: Trained Agents")
-    if st.button("Watch Them Battle!", use_container_width=True):
-        sim_env = ConnectX(grid_size, connect_n)
-        board_placeholder = st.empty()
+    # Display current game state
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("Current Game Board")
+        fig = game.render()
+        st.pyplot(fig)
+        plt.close()
         
-        while not sim_env.game_over:
-            current_player_id = sim_env.current_player
-            agent = agent1 if current_player_id == 1 else agent2
+        st.metric("Board Size", f"{config['rows']}x{config['cols']}")
+        st.metric("Win Condition", f"Connect {config['win_length']}")
+    
+    with col2:
+        st.subheader("Agent Statistics")
+        
+        if agent1 and agent2:
+            col_a, col_b = st.columns(2)
             
-            state = sim_env.get_state()
-            available_actions = sim_env.get_available_actions()
-            action = agent.choose_action(state, available_actions, training=False)
+            with col_a:
+                st.markdown("**🔴 Agent 1 (Red)**")
+                st.metric("Q-Table Size", f"{len(agent1.q_table):,}")
+                st.metric("Epsilon", f"{agent1.epsilon:.4f}")
+                st.metric("Wins", agent1.wins)
+                st.metric("Losses", agent1.losses)
+                st.metric("Draws", agent1.draws)
             
-            if action is None: break
+            with col_b:
+                st.markdown("**🟡 Agent 2 (Yellow)**")
+                st.metric("Q-Table Size", f"{len(agent2.q_table):,}")
+                st.metric("Epsilon", f"{agent2.epsilon:.4f}")
+                st.metric("Wins", agent2.wins)
+                st.metric("Losses", agent2.losses)
+                st.metric("Draws", agent2.draws)
+        
+        if 'training_history' in st.session_state and st.session_state.training_history:
+            st.divider()
+            history = st.session_state.training_history
+            st.markdown("**Training Summary**")
+            st.metric("Total Games Played", history['total_games'])
+            st.metric("Final P1 Win Rate", f"{history['p1_wins']/history['total_games']:.1%}")
+            st.metric("Final P2 Win Rate", f"{history['p2_wins']/history['total_games']:.1%}")
+    
+    # Interactive Play Section
+    st.divider()
+    st.subheader("🎮 Interactive Play")
+    
+    play_col1, play_col2 = st.columns(2)
+    
+    with play_col1:
+        if st.button("Watch Agents Play", use_container_width=True):
+            test_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
+            state = test_game.reset()
             
-            sim_env.make_move(action)
-            fig = visualize_board(sim_env.board, f"Player {current_player_id}'s move")
-            board_placeholder.pyplot(fig)
-            plt.close(fig)
-            time.sleep(0.5)
-
-        if sim_env.winner == 1: st.success("🏆 Agent 1 (Red) wins the final battle!")
-        elif sim_env.winner == 2: st.error("🏆 Agent 2 (Yellow) wins the final battle!")
-        else: st.warning("🤝 The final battle is a Draw!")
+            st.markdown("### Game Replay")
+            move_count = 0
+            
+            while not test_game.game_over and move_count < max_moves:
+                current_player = test_game.current_player
+                agent = agent1 if current_player == 1 else agent2
+                valid_moves = test_game.get_valid_moves()
+                
+                if not valid_moves:
+                    break
+                
+                action = agent.choose_action(state, valid_moves, training=False)
+                state, reward, done, info = test_game.make_move(action)
+                move_count += 1
+            
+            fig = test_game.render()
+            st.pyplot(fig)
+            plt.close()
+            
+            if test_game.winner:
+                st.success(f"Agent {test_game.winner} wins in {move_count} moves!")
+            else:
+                st.info("Game ended in a draw!")
+    
+    with play_col2:
+        if st.button("Reset Game Board", use_container_width=True):
+            st.session_state.game.reset()
+            st.rerun()
