@@ -372,8 +372,26 @@ def train_self_play(game, agent1, agent2, max_moves=100):
 def serialize_q_table(q_table):
     serialized = {}
     for key, value in q_table.items():
+        # Convert numpy types to native Python types
+        if isinstance(value, (np.integer, np.floating)):
+            value = value.item()
         serialized[str(key)] = value
     return serialized
+
+def convert_to_serializable(obj):
+    """Recursively convert numpy types to native Python types"""
+    if isinstance(obj, dict):
+        return {k: convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_serializable(item) for item in obj]
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 def deserialize_q_table(serialized_q):
     q_table = {}
@@ -385,30 +403,30 @@ def deserialize_q_table(serialized_q):
 def create_brain_zip(agent1, agent2, game_config):
     agent1_state = {
         "q_table": serialize_q_table(agent1.q_table),
-        "epsilon": agent1.epsilon,
-        "lr": agent1.lr,
-        "gamma": agent1.gamma,
-        "wins": agent1.wins,
-        "losses": agent1.losses,
-        "draws": agent1.draws,
-        "model": {str(k): v for k, v in agent1.model.items()}
+        "epsilon": float(agent1.epsilon),
+        "lr": float(agent1.lr),
+        "gamma": float(agent1.gamma),
+        "wins": int(agent1.wins),
+        "losses": int(agent1.losses),
+        "draws": int(agent1.draws),
+        "model": {str(k): convert_to_serializable(v) for k, v in agent1.model.items()}
     }
     
     agent2_state = {
         "q_table": serialize_q_table(agent2.q_table),
-        "epsilon": agent2.epsilon,
-        "lr": agent2.lr,
-        "gamma": agent2.gamma,
-        "wins": agent2.wins,
-        "losses": agent2.losses,
-        "draws": agent2.draws,
-        "model": {str(k): v for k, v in agent2.model.items()}
+        "epsilon": float(agent2.epsilon),
+        "lr": float(agent2.lr),
+        "gamma": float(agent2.gamma),
+        "wins": int(agent2.wins),
+        "losses": int(agent2.losses),
+        "draws": int(agent2.draws),
+        "model": {str(k): convert_to_serializable(v) for k, v in agent2.model.items()}
     }
     
     config_state = {
-        "rows": game_config['rows'],
-        "cols": game_config['cols'],
-        "win_length": game_config['win_length']
+        "rows": int(game_config['rows']),
+        "cols": int(game_config['cols']),
+        "win_length": int(game_config['win_length'])
     }
     
     buffer = io.BytesIO()
