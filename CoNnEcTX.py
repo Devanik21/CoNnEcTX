@@ -540,12 +540,16 @@ train_button = st.sidebar.button("🚀 Train Agents (Self-Play)", use_container_
 st.sidebar.divider()
 
 if st.sidebar.button("Clear Memory", use_container_width=True):
-    for key in ['game', 'agent1', 'agent2', 'training_history', 'game_config']:
+    # UPDATED: Added 'play_game', 'play_history', 'play_step' to the list
+    keys_to_clear = [
+        'game', 'agent1', 'agent2', 'training_history', 'game_config', 
+        'play_game', 'play_history', 'play_step'
+    ]
+    for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
     st.toast("Memory cleared!", icon="🧼")
     st.rerun()
-
 # ============================================================================
 # Main Area
 # ============================================================================
@@ -694,7 +698,9 @@ else:
     st.subheader("🎮 Interactive Play")
     
     # Initialize play session state
-    if 'play_game' not in st.session_state:
+    # Initialize play session state
+    # UPDATED: Check for 'play_step' as well to prevent KeyErrors
+    if 'play_game' not in st.session_state or 'play_step' not in st.session_state:
         st.session_state.play_game = None
         st.session_state.play_history = []
         st.session_state.play_step = 0
