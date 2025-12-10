@@ -693,14 +693,22 @@ else:
     st.divider()
     st.subheader("🎮 Interactive Play")
     
-    play_col1, play_col2 = st.columns(2)
+    # Initialize play session state
+    if 'play_game' not in st.session_state:
+        st.session_state.play_game = None
+        st.session_state.play_history = []
+        st.session_state.play_step = 0
+    
+    play_col1, play_col2, play_col3 = st.columns([1, 1, 1])
     
     with play_col1:
-        if st.button("Watch Agents Play", use_container_width=True):
+        if st.button("🎬 New Game (Watch Agents)", use_container_width=True, type="primary"):
+            # Start a completely new game
             test_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
             state = test_game.reset()
             
-            st.markdown("### Game Replay")
+            # Play the entire game and record history
+            play_history = [(test_game.board.copy(), None, None)]  # (board, player, col)
             move_count = 0
             
             while not test_game.game_over and move_count < max_moves:
@@ -713,18 +721,91 @@ else:
                 
                 action = agent.choose_action(state, valid_moves, training=False)
                 state, reward, done, info = test_game.make_move(action)
+                play_history.append((test_game.board.copy(), current_player, action))
                 move_count += 1
             
-            fig = test_game.render()
-            st.pyplot(fig)
-            plt.close()
-            
-            if test_game.winner:
-                st.success(f"Agent {test_game.winner} wins in {move_count} moves!")
-            else:
-                st.info("Game ended in a draw!")
+            # Store in session state
+            st.session_state.play_game = test_game
+            st.session_state.play_history = play_history
+            st.session_state.play_step = 0
+            st.rerun()
     
     with play_col2:
-        if st.button("Reset Game Board", use_container_width=True):
-            st.session_state.game.reset()
-            st.rerun()
+        if st.session_state.play_game is not None and st.session_state.play_step < len(st.session_state.play_history) - 1:
+            if st.button("➡️ Next Move", use_container_width=True):
+                st.session_state.play_step += 1
+                st.rerun()
+    
+    with play_col3:
+        if st.session_state.play_game is not None and st.session_state.play_step > 0:
+            if st.button("⬅️ Previous Move", use_container_width=True):
+                st.session_state.play_step -= 1
+                st.rerun()
+    
+    # Display current move
+    if st.session_state.play_game is not None:
+        current_step = st.session_state.play_step
+        total_steps = len(st.session_state.play_history) - 1
+        
+        st.progress(current_step / max(total_steps, 1))
+        
+        col_display1, col_display2 = st.columns([2, 1])
+        
+        with col_display1:
+            # Create a temporary game object to render current board state
+            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
+            temp_game.board = st.session_state.play_history[current_step][0].copy()
+            
+            # Check if game is over at this step
+            if current_step == total_steps:
+                temp_game.game_over = st.session_state.play_game.game_over
+                temp_game.winner = st.session_state.play_game.winner
+            
+            fig = temp_game.render()
+            st.pyplot(fig)
+            plt.close()
+        
+        with col_display2:
+            st.markdown(f"### Move {current_step} / {total_steps}")
+            
+            if current_step > 0:
+                board_state, player, col = st.session_state.play_history[current_step]
+                st.markdown(f"**Player {player}** {'🔴' if player == 1 else '🟡'}")
+                st.markdown(f"**Dropped in Column:** {col + 1}")
+            else:
+                st.markdown("**Game Start**")
+            
+            st.divider()
+            
+            # Show final result if at the end
+            if current_step == total_steps and st.session_state.play_game.game_over:
+                if st.session_state.play_game.winner:
+                    winner = st.session_state.play_game.winner
+                    st.success(f"🏆 Player {winner} {'🔴' if winner == 1 else '🟡'} Wins!")
+                else:
+                    st.info("🤝 Draw!")
+                st.metric("Total Moves", total_steps)
+            
+            # Quick navigation
+            st.divider()
+            st.markdown("**Quick Jump:**")
+            jump_col1, jump_col2 = st.columns(2)
+            with jump_col1:
+                if st.button("⏮️ Start", use_container_width=True):
+                    st.session_state.play_step = 0
+                    st.rerun()
+            with jump_col2:
+                if st.button("⏭️ End", use_container_width=True):
+                    st.session_state.play_step = total_steps
+                    st.rerun()
+    else:
+        st.info("👆 Click 'New Game' to watch the agents play!")
+    
+    # Reset button
+    st.divider()
+    if st.button("🔄 Reset Game Board", use_container_width=True):
+        st.session_state.game.reset()
+        st.session_state.play_game = None
+        st.session_state.play_history = []
+        st.session_state.play_step = 0
+        st.rerun()
