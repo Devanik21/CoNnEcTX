@@ -139,58 +139,70 @@ class ConnectXGame:
     # REPLACING THE OLD evaluating functions
     # ==========================================
 
+    # ==========================================
+    # PASTE THIS INSIDE ConnectXGame CLASS
+    # (Replace the old evaluate_window and score_position)
+    # ==========================================
+
     def score_position(self, piece):
-        """Mathematically evaluates the board for the given piece"""
+        """Mathematically evaluates the board (Score = Me - Opponent)"""
         score = 0
         opp_piece = 1 if piece == 2 else 2
 
-        # 1. Center Column Preference (Crucial for Connect 4 strategy)
+        # 1. Center Column Preference (Control the center, control the game)
         center_array = [int(i) for i in list(self.board[:, self.cols//2])]
         center_count = center_array.count(piece)
-        score += center_count * 3
+        score += center_count * 6  # Increased weight for center
 
-        # 2. Evaluate Horizontal
+        # Scan the entire board
+        # Horizontal, Vertical, Diagonal
+        # We perform the loop logic here to be efficient
+        
+        # Horizontal
         for r in range(self.rows):
             row_array = [int(i) for i in list(self.board[r,:])]
-            for c in range(self.cols - 3):
+            for c in range(self.cols - self.win_length + 1):
                 window = row_array[c:c+self.win_length]
                 score += self.evaluate_window(window, piece, opp_piece)
 
-        # 3. Evaluate Vertical
+        # Vertical
         for c in range(self.cols):
             col_array = [int(i) for i in list(self.board[:,c])]
-            for r in range(self.rows - 3):
+            for r in range(self.rows - self.win_length + 1):
                 window = col_array[r:r+self.win_length]
                 score += self.evaluate_window(window, piece, opp_piece)
 
-        # 4. Evaluate Positive Diagonal
-        for r in range(self.rows - 3):
-            for c in range(self.cols - 3):
+        # Positive Diagonal
+        for r in range(self.rows - self.win_length + 1):
+            for c in range(self.cols - self.win_length + 1):
                 window = [self.board[r+i][c+i] for i in range(self.win_length)]
                 score += self.evaluate_window(window, piece, opp_piece)
 
-        # 5. Evaluate Negative Diagonal
-        for r in range(self.rows - 3):
-            for c in range(self.cols - 3):
-                window = [self.board[r+3-i][c+i] for i in range(self.win_length)]
+        # Negative Diagonal
+        for r in range(self.rows - self.win_length + 1):
+            for c in range(self.cols - self.win_length + 1):
+                window = [self.board[r+self.win_length-1-i][c+i] for i in range(self.win_length)]
                 score += self.evaluate_window(window, piece, opp_piece)
 
         return score
 
     def evaluate_window(self, window, piece, opp_piece):
         score = 0
-        # Logic: Reward existing connections, Penalize opponent threats
+        # Weights for "God Mode"
+        # We prioritize BLOCKING over everything else.
         
-        if window.count(piece) == 4:
-            score += 100
-        elif window.count(piece) == 3 and window.count(0) == 1:
-            score += 5
-        elif window.count(piece) == 2 and window.count(0) == 2:
-            score += 2
+        # MY OPPORTUNITIES
+        if window.count(piece) == self.win_length:
+            score += 1000000  # Instant Win
+        elif window.count(piece) == self.win_length - 1 and window.count(0) == 1:
+            score += 100      # Good attack
+        elif window.count(piece) == self.win_length - 2 and window.count(0) == 2:
+            score += 5        # Decent build-up
 
-        # BLOCK OPPONENT (Aggressive Defense)
-        if window.count(opp_piece) == 3 and window.count(0) == 1:
-            score -= 4 
+        # OPPONENT THREATS (The "Paranoid Defense")
+        # If opponent has 3/4, we MUST block. The penalty is HIGHER than the reward for attacking (100).
+        if window.count(opp_piece) == self.win_length - 1 and window.count(0) == 1:
+            score -= 5000     # DANGER! BLOCK IMMEDIATELY!
 
         return score
     
@@ -288,32 +300,19 @@ class PureRLAgent:
         return self.q_table.get((state, action), 0.0)
 
     def choose_action(self, state, valid_moves, training=True, game_ref=None):
-        """
-        Hybrid Decision:
-        1. If Training: Use Epsilon-Greedy to sometimes explore random moves.
-        2. If Playing/Smart: Use Minimax to calculate the perfect move.
-        """
         if not valid_moves:
             return None
 
-        # Random Exploration (Only during training)
+        # IF WE HAVE A BRAIN (Minimax), USE IT ALWAYS!
+        # Ignore epsilon if game_ref is provided to force smart play
+        if game_ref:
+            # Depth 4 is standard. Depth 5 is smarter but slower.
+            col, _ = self.minimax(game_ref, depth=4, alpha=-math.inf, beta=math.inf, maximizingPlayer=True)
+            return col
+
+        # Fallback for pure RL (Training without Minimax)
         if training and random.random() < self.epsilon:
             return random.choice(valid_moves)
-
-        # INTELLIGENT MOVE: Use Minimax
-        # We need a reference to the game object to simulate moves.
-        # If game_ref is passed, we use Minimax. If not, we fall back to Q-Table.
-        
-        if game_ref:
-            # Depth 4 is a good balance of speed and intelligence for Python
-            col, minimax_score = self.minimax(game_ref, depth=4, alpha=-math.inf, beta=math.inf, maximizingPlayer=True)
-            return col
-        
-        # Fallback to Q-Table if no game reference (shouldn't happen in play mode)
-        q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
-        max_q = max(q_values, key=lambda x: x[1])[1]
-        best_moves = [move for move, q in q_values if q == max_q]
-        return random.choice(best_moves)
 
     def is_terminal_node(self, game):
         return game.game_over or len(game.get_valid_moves()) == 0
