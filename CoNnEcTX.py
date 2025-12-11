@@ -780,50 +780,70 @@ else:
     
     # Interactive Play Section
     st.divider()
+    # ============================================================================
+    # UPDATE: Interactive Play Section (Replace the bottom section with this)
+    # ============================================================================
+    st.divider()
     st.subheader("🎮 Interactive Play")
     
     # Initialize play session state
-    # UPDATED: Define a function to update the interactive play UI without a full rerun
-    def update_play_view(board_placeholder, info_placeholder, progress_placeholder):
-        current_step = st.session_state.play_step
-        total_steps = len(st.session_state.play_history) - 1
-
-        progress_placeholder.progress(current_step / max(total_steps, 1))
-
-        # Render the board
-        with board_placeholder.container():
-            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
-            temp_game.board = st.session_state.play_history[current_step][0].copy()
-            if current_step == total_steps:
-                temp_game.game_over = st.session_state.play_game.game_over
-                temp_game.winner = st.session_state.play_game.winner
-            fig = temp_game.render()
-            st.pyplot(fig)
-            plt.close()
-
-        # Render the move info
-        with info_placeholder.container():
-            st.markdown(f"### Move {current_step} / {total_steps}")
-            if current_step > 0:
-                _, player, col = st.session_state.play_history[current_step]
-                st.markdown(f"**Player {player}** {'🔴' if player == 1 else '🟡'}")
-                st.markdown(f"**Dropped in Column:** {col + 1}")
-
     if 'play_game' not in st.session_state:
         st.session_state.play_game = None
         st.session_state.play_history = []
         st.session_state.play_step = 0
-    
+
+    # Helper function to update view without full rerun
+    def update_play_view(board_ph, info_ph, prog_ph):
+        if not st.session_state.play_history:
+            return
+            
+        curr_step = st.session_state.play_step
+        total_steps = len(st.session_state.play_history) - 1
+        
+        # Update Progress
+        prog_ph.progress(curr_step / max(total_steps, 1))
+        
+        # Render Board
+        with board_ph.container():
+            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
+            # Restore board state from history
+            temp_game.board = st.session_state.play_history[curr_step][0].copy()
+            
+            # If it's the last step, restore game status (win/loss)
+            if curr_step == total_steps and st.session_state.play_game:
+                temp_game.game_over = st.session_state.play_game.game_over
+                temp_game.winner = st.session_state.play_game.winner
+            
+            fig = temp_game.render()
+            st.pyplot(fig)
+            plt.close() # Important: Close plot to free memory
+        
+        # Render Info
+        with info_ph.container():
+            st.markdown(f"### Move {curr_step} / {total_steps}")
+            if curr_step > 0:
+                _, player, col = st.session_state.play_history[curr_step]
+                p_color = "🔴 Red" if player == 1 else "🟡 Yellow"
+                st.info(f"**{p_color}** dropped in **Column {col}**")
+            else:
+                st.markdown("*Game Start*")
+
+    # Layout for Controls
     play_col1, play_col2, play_col3 = st.columns([1, 1, 1])
     
     with play_col1:
+        # ADDED: Randomness Slider for Watching
+        watch_randomness = st.slider("Randomness (Varied Games)", 0.0, 1.0, 0.1, 0.05, 
+                                     help="If 0, agents always play the same 'perfect' game. Increase to see variations.")
+        
         if st.button("🎬 New Game (Watch Agents)", use_container_width=True, type="primary"):
             # Start a completely new game
             test_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
             state = test_game.reset()
             
             # Play the entire game and record history
-            play_history = [(test_game.board.copy(), None, None)]  # (board, player, col)
+            # History format: (board_copy, player_who_just_moved, col_dropped)
+            play_history = [(test_game.board.copy(), None, None)]
             move_count = 0
             
             while not test_game.game_over and move_count < max_moves:
@@ -834,14 +854,20 @@ else:
                 if not valid_moves:
                     break
                 
-                # UPDATED: Pass the game object and minimax depth!
-                action = agent.choose_action(
-                    state, 
-                    valid_moves, 
-                    training=False, 
-                    game_obj=test_game, 
-                    minimax_depth=minimax_depth
-                )
+                # --- UPDATE: Logic to add variety ---
+                # If randomness > 0, occasionally pick a random valid move
+                if random.random() < watch_randomness:
+                    action = random.choice(valid_moves)
+                else:
+                    # Otherwise use the Agent's Brain
+                    action = agent.choose_action(
+                        state, 
+                        valid_moves, 
+                        training=False, 
+                        game_obj=test_game, 
+                        minimax_depth=minimax_depth
+                    )
+                # ------------------------------------
                 
                 state, reward, done, info = test_game.make_move(action)
                 play_history.append((test_game.board.copy(), current_player, action))
@@ -853,54 +879,41 @@ else:
             st.session_state.play_step = 0
             st.rerun()
 
-    # Create placeholders for the dynamic content
+    # Dynamic Placeholders
     progress_placeholder = st.empty()
     col_display1, col_display2 = st.columns([2, 1])
     board_placeholder = col_display1.empty()
     info_placeholder = col_display2.empty()
 
+    # Navigation Buttons
     with play_col2:
-        if st.session_state.play_game is not None and st.session_state.play_step < len(st.session_state.play_history) - 1:
+        if st.session_state.play_game and st.session_state.play_step < len(st.session_state.play_history) - 1:
             if st.button("➡️ Next Move", use_container_width=True):
                 st.session_state.play_step += 1
-                # No rerun, just update the placeholders
-                update_play_view(board_placeholder, info_placeholder, progress_placeholder)
+                # Update logic is handled below, no rerun needed usually, 
+                # but Streamlit buttons trigger rerun anyway.
     
     with play_col3:
-        if st.session_state.play_game is not None and st.session_state.play_step > 0:
+        if st.session_state.play_game and st.session_state.play_step > 0:
             if st.button("⬅️ Previous Move", use_container_width=True):
                 st.session_state.play_step -= 1
-                # No rerun, just update the placeholders
-                update_play_view(board_placeholder, info_placeholder, progress_placeholder)
-    
-    # Display current move
-    if st.session_state.play_game is not None:
-        # Initial draw
-        update_play_view(board_placeholder, info_placeholder, progress_placeholder)
 
-        # Display final result and quick navigation which don't need instant updates
-        with info_placeholder.container():
-            if st.session_state.play_step == len(st.session_state.play_history) - 1 and st.session_state.play_game.game_over:
-                st.divider()
+    # Render the current state (Runs on every script execution)
+    if st.session_state.play_game:
+        update_play_view(board_placeholder, info_placeholder, progress_placeholder)
+        
+        # End of Game Message
+        if st.session_state.play_step == len(st.session_state.play_history) - 1:
+            if st.session_state.play_game.game_over:
+                res_container = st.container()
                 if st.session_state.play_game.winner:
                     winner = st.session_state.play_game.winner
-                    st.success(f"🏆 Player {winner} {'🔴' if winner == 1 else '🟡'} Wins!")
+                    color = "🔴 Red" if winner == 1 else "🟡 Yellow"
+                    res_container.success(f"🏆 {color} Wins!")
                 else:
-                    st.info("🤝 Draw!")
-                st.metric("Total Moves", len(st.session_state.play_history) - 1)
-
-        # Quick navigation still needs a rerun, but it's less frequently used
-        st.divider()
-        st.markdown("**Quick Jump:**")
-        jump_col1, jump_col2 = st.columns(2)
-        if jump_col1.button("⏮️ Start", use_container_width=True):
-            st.session_state.play_step = 0
-            st.rerun()
-        if jump_col2.button("⏭️ End", use_container_width=True):
-            st.session_state.play_step = len(st.session_state.play_history) - 1
-            st.rerun()
+                    res_container.info("🤝 It's a Draw!")
     else:
-        st.info("👆 Click 'New Game' to watch the agents play!")
+        board_placeholder.info("👆 Click 'New Game' to watch the agents play!")
     
     # Reset button
     st.divider()
