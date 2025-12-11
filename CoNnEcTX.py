@@ -988,7 +988,7 @@ else:
             # C. Game Over Message
             if h_game.game_over:
                 if h_game.winner == st.session_state.human_id:
-                    st.balloons()
+                    
                     st.success("🏆 VICTORY! You defeated the AI!")
                 elif h_game.winner:
                     st.error("💀 DEFEAT! The AI wins.")
