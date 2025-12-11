@@ -339,6 +339,7 @@ class PureRLAgent:
 
     # --- 3. SELECTION: Hybrid Decision Making ---
     # --- 3. SELECTION: Hybrid Decision Making ---
+    # --- 3. SELECTION: Hybrid Decision Making ---
     def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
         if not valid_moves:
             return None
@@ -360,11 +361,11 @@ class PureRLAgent:
                 rules = (board_np.shape[0], board_np.shape[1], 4)
 
             best_score = -float('inf')
-            # Randomize start to keep it interesting
-            best_col = random.choice(valid_moves)
+            best_col = random.choice(valid_moves) # Random tie-breaker
             
             for col in valid_moves:
                 temp_board = board_np.copy()
+                # Simulate drop
                 for r in range(rules[0]-1, -1, -1):
                     if temp_board[r][col] == 0:
                         temp_board[r][col] = self.player_id
@@ -376,7 +377,6 @@ class PureRLAgent:
                 if score > best_score:
                     best_score = score
                     best_col = col
-            
             return best_col
 
         # 3. PURE RL: Use Q-Table (If depth is 0)
@@ -426,25 +426,23 @@ class PureRLAgent:
 # Self-Play Training
 # ============================================================================
 
-def train_self_play(game, agent1, agent2, max_moves=100, train_depth=0): # <--- Added argument
+def train_self_play(game, agent1, agent2, max_moves=100, train_depth=0): # <--- ADDED PARAM
     """Train two agents against each other"""
     state = game.reset()
-    history = []  # Store (state, action, player) for later reward assignment
+    history = []  
     
     for move_num in range(max_moves):
         current_player = game.current_player
         agent = agent1 if current_player == 1 else agent2
-        
         valid_moves = game.get_valid_moves()
-        if not valid_moves:
-            break
+        if not valid_moves: break
         
-        # Pass the train_depth here!
+        # PASS train_depth HERE
         action = agent.choose_action(state, valid_moves, training=True, game_obj=game, minimax_depth=train_depth)
-        history.append((state, action, current_player))
         
-        # Execute move
+        history.append((state, action, current_player))
         next_state, reward, done, info = game.make_move(action)
+
         
         
         
@@ -670,7 +668,9 @@ with st.sidebar.expander("4. Brain Storage", expanded=False):
                 st.session_state.agent2 = agent2
                 st.session_state.game_config = config
                 st.session_state.game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
-                st.toast("Agents loaded!", icon="")
+                
+                # FIX: Added a valid emoji icon to prevent crash
+                st.toast("Agents loaded!", icon="✅")
                 st.rerun()
 
 train_button = st.sidebar.button(" Train Agents (Self-Play)", use_container_width=True, type="primary")
