@@ -338,49 +338,54 @@ class PureRLAgent:
             return value
 
     # --- 3. SELECTION: Hybrid Decision Making ---
+    # --- 3. SELECTION: Hybrid Decision Making ---
     def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
         if not valid_moves:
             return None
         
-        # TRAINING: Use pure RL (Epsilon Greedy) for speed
-        if training:
-            if random.random() < self.epsilon:
-                return random.choice(valid_moves)
-            q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
-            max_q = max(q_values, key=lambda x: x[1])[1]
-            best_moves = [move for move, q in q_values if q == max_q]
-            return random.choice(best_moves)
+        # 1. EXPLORATION: Random moves (Only during training)
+        if training and random.random() < self.epsilon:
+            return random.choice(valid_moves)
         
-        # PLAYING: Use Minimax (Smart)
-        # Convert state tuple back to numpy for calculation
-        board_np = np.array(state)
-        
-        # Depth 2 is fast and smart. Depth 4 is very smart but slower.
-        # We default to 2 if depth is 0 to ensure intelligence.
-        depth_to_use = minimax_depth if minimax_depth > 0 else 2
-        
-        # Game rules extraction
-        rules = (board_np.shape[0], board_np.shape[1], 4)
-        if game_obj: rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
+        # 2. EXPLOITATION: Choose the best move
+        # If we have a depth > 0, we use the "Weapon" (Minimax)
+        if minimax_depth > 0:
+            # Convert state tuple back to numpy for calculation
+            board_np = np.array(state)
+            
+            # Game rules extraction
+            if game_obj:
+                rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
+            else:
+                rules = (board_np.shape[0], board_np.shape[1], 4)
 
-        best_score = -float('inf')
-        best_col = random.choice(valid_moves)
-        
-        for col in valid_moves:
-            temp_board = board_np.copy()
-            for r in range(rules[0]-1, -1, -1):
-                if temp_board[r][col] == 0:
-                    temp_board[r][col] = self.player_id
-                    break
+            best_score = -float('inf')
+            # Randomize start to keep it interesting
+            best_col = random.choice(valid_moves)
             
-            # Call Minimax
-            score = self.minimax(temp_board, depth_to_use, -float('inf'), float('inf'), False, rules)
+            for col in valid_moves:
+                temp_board = board_np.copy()
+                for r in range(rules[0]-1, -1, -1):
+                    if temp_board[r][col] == 0:
+                        temp_board[r][col] = self.player_id
+                        break
+                
+                # Call Minimax
+                score = self.minimax(temp_board, minimax_depth, -float('inf'), float('inf'), False, rules)
+                
+                if score > best_score:
+                    best_score = score
+                    best_col = col
             
-            if score > best_score:
-                best_score = score
-                best_col = col
-        
-        return best_col
+            return best_col
+
+        # 3. PURE RL: Use Q-Table (If depth is 0)
+        q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+        max_q = max(q_values, key=lambda x: x[1])[1]
+        best_moves = [move for move, q in q_values if q == max_q]
+        return random.choice(best_moves)
+
+    
 
     # (Keep standard RL update functions below)
     def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
@@ -421,7 +426,7 @@ class PureRLAgent:
 # Self-Play Training
 # ============================================================================
 
-def train_self_play(game, agent1, agent2, max_moves=100):
+def train_self_play(game, agent1, agent2, max_moves=100, train_depth=0): # <--- Added argument
     """Train two agents against each other"""
     state = game.reset()
     history = []  # Store (state, action, player) for later reward assignment
@@ -434,12 +439,14 @@ def train_self_play(game, agent1, agent2, max_moves=100):
         if not valid_moves:
             break
         
-        
-        action = agent.choose_action(state, valid_moves, training=True, game_obj=game)
+        # Pass the train_depth here!
+        action = agent.choose_action(state, valid_moves, training=True, game_obj=game, minimax_depth=train_depth)
         history.append((state, action, current_player))
         
         # Execute move
         next_state, reward, done, info = game.make_move(action)
+        
+        
         
         if 'invalid' in info:
             agent.invalid_moves += 1
@@ -647,6 +654,12 @@ with st.sidebar.expander("3. Training Configuration", expanded=True):
     episodes = st.number_input("Training Episodes", 100, 1000000, 5000, 100)
     max_moves = st.number_input("Max Moves per Game", 10, 1000000, 100, 10)
     early_stop_rate = st.slider("Early Stop (Win Rate)", 0.7, 0.99, 0.85, 0.01)
+    # NEW SLIDER
+    train_depth = st.slider(
+        "Training IQ (Depth)", 
+        0, 10, 0, 
+        help="0=Fast (Pure RL). >0=Slow (Hybrid). Keep this low (1-2)!"
+    )
 
 with st.sidebar.expander("4. Brain Storage", expanded=False):
     if 'agent1' in st.session_state and st.session_state.agent1 is not None:
