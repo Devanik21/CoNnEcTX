@@ -581,7 +581,7 @@ with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
     epsilon_min = st.slider("Min Epsilon (ε)", 0.01, 0.3, 0.05, 0.01)
     
     st.markdown("---")
-    st.markdown("** AGI Thinking**")
+    st.markdown("**AGI Thinking**")
     minimax_depth = st.slider(
         "Lookahead Depth", 
         min_value=0, 
