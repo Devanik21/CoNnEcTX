@@ -638,7 +638,7 @@ with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
     minimax_depth = st.slider(
         "Thinking Depth", 
         min_value=0, 
-        max_value=100, 
+        max_value=10, 
         value=0, 
         help="0 = Pure RL (Intuition), >0 = RL + Tree Search (Calculation)"
     )
