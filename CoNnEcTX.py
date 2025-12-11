@@ -28,7 +28,7 @@ A **two-player Connect X game** solved using **Pure Reinforcement Learning** wit
 2. **Train Agents**: Watch two RL agents learn through self-play
 3. **Play or Test**: Challenge the trained agent or watch it play!
 
-**No Minimax. No Tree Search. Just Pure RL Magic! **
+**Pure RL Magic!**
 """)
 
 # ============================================================================
