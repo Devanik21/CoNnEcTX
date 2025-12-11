@@ -20,7 +20,7 @@ st.set_page_config(
     page_icon="🎮"
 )
 
-st.title("🧠 Pure RL Connect X Game")
+st.title(" Pure RL Connect X Game")
 st.markdown("""
 A **two-player Connect X game** solved using **Pure Reinforcement Learning** with self-play training.
 
@@ -28,7 +28,7 @@ A **two-player Connect X game** solved using **Pure Reinforcement Learning** wit
 2. **Train Agents**: Watch two RL agents learn through self-play
 3. **Play or Test**: Challenge the trained agent or watch it play!
 
-**No Minimax. No Tree Search. Just Pure RL Magic! 🚀**
+**No Minimax. No Tree Search. Just Pure RL Magic! **
 """)
 
 # ============================================================================
@@ -670,10 +670,10 @@ with st.sidebar.expander("4. Brain Storage", expanded=False):
                 st.session_state.agent2 = agent2
                 st.session_state.game_config = config
                 st.session_state.game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
-                st.toast("Agents loaded!", icon="🧠")
+                st.toast("Agents loaded!", icon="")
                 st.rerun()
 
-train_button = st.sidebar.button("🚀 Train Agents (Self-Play)", use_container_width=True, type="primary")
+train_button = st.sidebar.button(" Train Agents (Self-Play)", use_container_width=True, type="primary")
 
 st.sidebar.divider()
 
@@ -689,7 +689,7 @@ if st.sidebar.button("Clear Memory", use_container_width=True):
 # ============================================================================
 
 if 'game_config' not in st.session_state:
-    st.info("👈 Configure and create a game using the sidebar to begin!")
+    st.info(" Configure and create a game using the sidebar to begin!")
 else:
     config = st.session_state.game_config
     game = st.session_state.game
