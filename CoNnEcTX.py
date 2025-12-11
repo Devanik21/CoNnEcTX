@@ -641,7 +641,7 @@ with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
 
 with st.sidebar.expander("3. Training Configuration", expanded=True):
     episodes = st.number_input("Training Episodes", 100, 1000000, 5000, 100)
-    max_moves = st.number_input("Max Moves per Game", 10, 1000, 100, 10)
+    max_moves = st.number_input("Max Moves per Game", 10, 1000000, 100, 10)
     early_stop_rate = st.slider("Early Stop (Win Rate)", 0.7, 0.99, 0.85, 0.01)
 
 with st.sidebar.expander("4. Brain Storage", expanded=False):
