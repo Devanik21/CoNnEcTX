@@ -152,6 +152,10 @@ class ConnectXGame:
 # Pure RL Agent (Q-Learning with Self-Play)
 # ============================================================================
 
+# ============================================================================
+# HYBRID AGENT: RL + Minimax (The "Smart & Fast" Update)
+# ============================================================================
+
 class PureRLAgent:
     def __init__(self, player_id, lr=0.1, gamma=0.99, epsilon_decay=0.9995, epsilon_min=0.05):
         self.player_id = player_id
@@ -165,7 +169,7 @@ class PureRLAgent:
         self.init_q_value = 0.0
         
         self.experience_buffer = deque(maxlen=50000)
-        self.model = {} 
+        self.model = {}
         self.priority_queue = []
         self.in_queue = set()
         
@@ -173,242 +177,236 @@ class PureRLAgent:
         self.losses = 0
         self.draws = 0
         self.invalid_moves = 0
-        
-        self.visit_counts = {}
-        self.curiosity_weight = 0.2  # Lowered slightly for stability
-        self.curiosity_decay = 0.9995
 
     def get_q_value(self, state, action):
         return self.q_table.get((state, action), self.init_q_value)
 
-    def get_state_value(self, board):
-        state_tuple = tuple(map(tuple, board))
-        valid_cols = [c for c in range(board.shape[1]) if board[0, c] == 0]
-        if not valid_cols: return 0
-        return max([self.get_q_value(state_tuple, col) for col in valid_cols], default=0)
-
-    # --- NEW: Helper to detect immediate wins/losses ---
-    def detect_critical_move(self, board, valid_moves, game_obj=None):
-        if game_obj is None: return None
+    # --- 1. THE EYE: Heuristic Evaluation ---
+    def evaluate_window(self, window, piece):
+        score = 0
+        opp_piece = 3 - piece
         
-        # Check for winning move
-        for col in valid_moves:
-            temp = board.copy()
-            # Simulate drop
-            for r in range(game_obj.rows-1, -1, -1):
-                if temp[r, col] == 0:
-                    temp[r, col] = self.player_id
-                    if game_obj._check_win(r, col): return col # WIN NOW
-                    break
+        if window.count(piece) == 4:
+            score += 10000
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 10
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 4 # slightly preferred
         
-        # Check for blocking opponent win
-        opponent = 3 - self.player_id
-        for col in valid_moves:
-            temp = board.copy()
-            for r in range(game_obj.rows-1, -1, -1):
-                if temp[r, col] == 0:
-                    temp[r, col] = opponent
-                    # We use the game_obj's check_win logic on the temp board
-                    # Note: We need to temporarily set board to temp to use _check_win or copy logic
-                    # To be safe and fast, we just implement a quick check here:
-                    if self.fast_check_win(temp, r, col, game_obj.win_length, opponent):
-                        return col # BLOCK NOW
-                    break
-        return None
+        if window.count(opp_piece) == 3 and window.count(0) == 1:
+            score -= 80 # BLOCK OPPONENT!
+            
+        return score
 
-    def fast_check_win(self, board, row, col, win_len, player):
-        directions = [(0,1), (1,0), (1,1), (1,-1)]
+    def score_position(self, board, piece):
+        score = 0
         rows, cols = board.shape
-        for dr, dc in directions:
-            count = 1
-            for i in range(1, win_len):
-                r, c = row + dr*i, col + dc*i
-                if 0 <= r < rows and 0 <= c < cols and board[r, c] == player: count += 1
-                else: break
-            for i in range(1, win_len):
-                r, c = row - dr*i, col - dc*i
-                if 0 <= r < rows and 0 <= c < cols and board[r, c] == player: count += 1
-                else: break
-            if count >= win_len: return True
+        
+        # Preference for Center Column (Strategic Advantage)
+        center_array = [int(i) for i in list(board[:, cols//2])]
+        center_count = center_array.count(piece)
+        score += center_count * 6
+
+        # Horizontal
+        for r in range(rows):
+            row_array = [int(i) for i in list(board[r,:])]
+            for c in range(cols-3):
+                window = row_array[c:c+4]
+                score += self.evaluate_window(window, piece)
+
+        # Vertical
+        for c in range(cols):
+            col_array = [int(i) for i in list(board[:,c])]
+            for r in range(rows-3):
+                window = col_array[r:r+4]
+                score += self.evaluate_window(window, piece)
+
+        # Positive Diagonal
+        for r in range(rows-3):
+            for c in range(cols-3):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += self.evaluate_window(window, piece)
+
+        # Negative Diagonal
+        for r in range(rows-3):
+            for c in range(cols-3):
+                window = [board[r+3-i][c+i] for i in range(4)]
+                score += self.evaluate_window(window, piece)
+
+        return score
+
+    # --- 2. THE BRAIN: Minimax with Alpha-Beta Pruning ---
+    def is_terminal_node(self, board, game_rules):
+        rows, cols, win_len = game_rules
+        # Check Win P1
+        if self.check_win_static(board, 1, win_len): return True
+        # Check Win P2
+        if self.check_win_static(board, 2, win_len): return True
+        # Check Draw
+        if len([c for c in range(cols) if board[0][c] == 0]) == 0: return True
         return False
 
-    def minimax(self, board, depth, maximizing, alpha, beta, game_rules):
-        rows, cols, win_len = game_rules
-        opponent = 3 - self.player_id
-        
-        # Heuristic checks
-        # If I can win, score is high
+    def check_win_static(self, board, piece, win_len):
+        # Quick check for the Minimax simulation
+        rows, cols = board.shape
+        # Horizontal
+        for c in range(cols-3):
+            for r in range(rows):
+                if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                    return True
+        # Vertical
         for c in range(cols):
-            if board[0,c] == 0: # valid
-                # simplified check for speed would go here
-                pass
+            for r in range(rows-3):
+                if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                    return True
+        # Pos Diag
+        for c in range(cols-3):
+            for r in range(rows-3):
+                if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                    return True
+        # Neg Diag
+        for c in range(cols-3):
+            for r in range(3, rows):
+                if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                    return True
+        return False
 
-        valid_moves = [c for c in range(cols) if board[0, c] == 0]
-        if not valid_moves: return 0 
-
-        if depth == 0: return self.get_state_value(board)
-
-        if maximizing:
-            max_eval = -float('inf')
-            for col in valid_moves:
-                temp_board = board.copy()
-                for r in range(rows-1, -1, -1):
-                    if temp_board[r, col] == 0:
-                        temp_board[r, col] = self.player_id
-                        break
-                # Quick win check optimization
-                if self.fast_check_win(temp_board, r, col, win_len, self.player_id): return 100000
-
-                eval_score = self.minimax(temp_board, depth-1, False, alpha, beta, game_rules)
-                max_eval = max(max_eval, eval_score)
-                alpha = max(alpha, eval_score)
-                if beta <= alpha: break
-            return max_eval
-        else:
-            min_eval = float('inf')
-            for col in valid_moves:
-                temp_board = board.copy()
-                for r in range(rows-1, -1, -1):
-                    if temp_board[r, col] == 0:
-                        temp_board[r, col] = opponent
-                        break
-                if self.fast_check_win(temp_board, r, col, win_len, opponent): return -100000
-
-                eval_score = self.minimax(temp_board, depth-1, True, alpha, beta, game_rules)
-                min_eval = min(min_eval, eval_score)
-                beta = min(beta, eval_score)
-                if beta <= alpha: break
-            return min_eval
-
-    def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
-        if not valid_moves: return None
+    def minimax(self, board, depth, alpha, beta, maximizingPlayer, game_rules):
+        rows, cols, win_len = game_rules
+        valid_locations = [c for c in range(cols) if board[0][c] == 0]
+        is_terminal = self.is_terminal_node(board, game_rules)
         
-        # Convert state to numpy for analysis
-        current_board = np.array(state)
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if self.check_win_static(board, self.player_id, win_len):
+                    return 10000000
+                elif self.check_win_static(board, 3-self.player_id, win_len):
+                    return -10000000
+                else: # Draw
+                    return 0
+            else: # Depth is zero, use Heuristic + Q-Value Intuition
+                # 1. Heuristic Score
+                h_score = self.score_position(board, self.player_id)
+                
+                # 2. Q-Value Intuition (The RL part!)
+                # We try to see if we have visited this state in training
+                state_tuple = tuple(map(tuple, board))
+                # Average Q-value of available moves from here
+                q_total = 0
+                for col in valid_locations:
+                    q_total += self.get_q_value(state_tuple, col)
+                
+                # Combine: Heuristic is main driver, Q-value is the "tie breaker" or "gut feeling"
+                return h_score + (q_total * 0.1)
 
-        # --- INTELLIGENCE BOOST: Always take winning moves or blocks ---
-        # Even during training, we guide them. This is "Teacher Forcing".
-        if game_obj:
-            critical = self.detect_critical_move(current_board, valid_moves, game_obj)
-            if critical is not None:
-                # 90% chance to take the smart move during training, 100% during play
-                if not training or random.random() < 0.9:
-                    return critical
+        if maximizingPlayer:
+            value = -float('inf')
+            # Randomize order to add variety
+            random.shuffle(valid_locations)
+            for col in valid_locations:
+                # Simulate Move
+                temp_board = board.copy()
+                for r in range(rows-1, -1, -1):
+                    if temp_board[r][col] == 0:
+                        temp_board[r][col] = self.player_id
+                        break
+                new_score = self.minimax(temp_board, depth-1, alpha, beta, False, game_rules)
+                value = max(value, new_score)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else: # Minimizing Opponent
+            value = float('inf')
+            random.shuffle(valid_locations)
+            for col in valid_locations:
+                temp_board = board.copy()
+                opponent = 3 - self.player_id
+                for r in range(rows-1, -1, -1):
+                    if temp_board[r][col] == 0:
+                        temp_board[r][col] = opponent
+                        break
+                new_score = self.minimax(temp_board, depth-1, alpha, beta, True, game_rules)
+                value = min(value, new_score)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
 
-        # TRAINING: Epsilon Greedy
+    # --- 3. SELECTION: Hybrid Decision Making ---
+    def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
+        if not valid_moves:
+            return None
+        
+        # TRAINING: Use pure RL (Epsilon Greedy) for speed
         if training:
             if random.random() < self.epsilon:
                 return random.choice(valid_moves)
             q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
-            # Add small random noise to break ties
             max_q = max(q_values, key=lambda x: x[1])[1]
             best_moves = [move for move, q in q_values if q == max_q]
             return random.choice(best_moves)
         
-        # PLAYING: Minimax
-        if minimax_depth == 0:
-            q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
-            max_q = max(q_values, key=lambda x: x[1])[1]
-            return random.choice([move for move, q in q_values if q == max_q])
+        # PLAYING: Use Minimax (Smart)
+        # Convert state tuple back to numpy for calculation
+        board_np = np.array(state)
+        
+        # Depth 2 is fast and smart. Depth 4 is very smart but slower.
+        # We default to 2 if depth is 0 to ensure intelligence.
+        depth_to_use = minimax_depth if minimax_depth > 0 else 2
+        
+        # Game rules extraction
+        rules = (board_np.shape[0], board_np.shape[1], 4)
+        if game_obj: rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
 
         best_score = -float('inf')
-        best_move = random.choice(valid_moves)
-        game_rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
-
+        best_col = random.choice(valid_moves)
+        
         for col in valid_moves:
-            temp_board = current_board.copy()
-            for r in range(current_board.shape[0]-1, -1, -1):
-                if temp_board[r, col] == 0:
-                    temp_board[r, col] = self.player_id
+            temp_board = board_np.copy()
+            for r in range(rules[0]-1, -1, -1):
+                if temp_board[r][col] == 0:
+                    temp_board[r][col] = self.player_id
                     break
             
-            score = self.minimax(temp_board, minimax_depth-1, False, -float('inf'), float('inf'), game_rules)
+            # Call Minimax
+            score = self.minimax(temp_board, depth_to_use, -float('inf'), float('inf'), False, rules)
+            
             if score > best_score:
                 best_score = score
-                best_move = col
-        return best_move
-    
-    def get_intrinsic_reward(self, state):
-        visit_count = self.visit_counts.get(state, 0) + 1
-        self.visit_counts[state] = visit_count
-        return (self.curiosity_weight / np.sqrt(visit_count))
-    
-    def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
-        intrinsic = self.get_intrinsic_reward(state)
-        total_reward = reward + intrinsic
+                best_col = col
         
-        # Standard Q-Update
+        return best_col
+
+    # (Keep standard RL update functions below)
+    def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
+        # Standard Q-learning update
         current_q = self.get_q_value(state, action)
-        if done: target = total_reward
+        if done:
+            target = reward
         else:
-            max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves], default=0)
-            target = total_reward + self.gamma * max_next_q
+            if next_valid_moves:
+                max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
+            else:
+                max_next_q = 0
+            target = reward + self.gamma * max_next_q
         
         new_q = current_q + self.lr * (target - current_q)
         self.q_table[(state, action)] = new_q
-        
-        # --- NEW: Mirror Learning (Symmetry) ---
-        # Update the mirrored state too! (Doubles learning speed)
-        # 1. Flip State
-        board_np = np.array(state)
-        flipped_board = np.fliplr(board_np)
-        flipped_state = tuple(map(tuple, flipped_board))
-        
-        # 2. Flip Action (Column 0 becomes Col 6, Col 1 becomes Col 5, etc.)
-        cols = board_np.shape[1]
-        flipped_action = cols - 1 - action
-        
-        # 3. Flip Next State
-        next_board_np = np.array(next_state)
-        flipped_next_board = np.fliplr(next_board_np)
-        flipped_next_state = tuple(map(tuple, flipped_next_board))
-        
-        # 4. Flip Next Valid Moves
-        flipped_next_valid = [cols - 1 - c for c in next_valid_moves]
-        
-        # Update Mirrored Q-Value
-        current_q_mirror = self.get_q_value(flipped_state, flipped_action)
-        if done: target_m = total_reward
-        else:
-            max_next_q_m = max([self.get_q_value(flipped_next_state, a) for a in flipped_next_valid], default=0)
-            target_m = total_reward + self.gamma * max_next_q_m
-            
-        self.q_table[(flipped_state, flipped_action)] = current_q_mirror + self.lr * (target_m - current_q_mirror)
-        # ---------------------------------------
-
-        self.model[(state, action)] = (next_state, total_reward, done)
+        self.model[(state, action)] = (next_state, reward, done)
         return abs(target - current_q)
 
-    # (Keep prioritized_update, planning_step, experience_replay, decay_epsilon, record_result same as before)
-    def prioritized_update(self, state, action, priority, max_queue_size=1000):
-        if (state, action) not in self.in_queue:
-            if len(self.priority_queue) >= max_queue_size: heappop(self.priority_queue)
-            heappush(self.priority_queue, (-abs(priority), state, action))
-            self.in_queue.add((state, action))
-    
     def planning_step(self, n_steps=10):
-        for _ in range(min(n_steps, len(self.priority_queue))):
-            if not self.priority_queue: break
-            _, state, action = heappop(self.priority_queue)
-            self.in_queue.discard((state, action))
-            if (state, action) in self.model:
-                next_state, reward, done = self.model[(state, action)]
-                current_q = self.get_q_value(state, action)
-                if done: target = reward
-                else:
-                    max_next_q = max([self.get_q_value(next_state, a) for a in range(7)], default=0)
-                    target = reward + self.gamma * max_next_q
-                self.q_table[(state, action)] = current_q + self.lr * (target - current_q)
+        pass # Optional optimization
     
     def experience_replay(self, batch_size=32):
         if len(self.experience_buffer) < batch_size: return
         batch = random.sample(self.experience_buffer, batch_size)
         for state, action, reward, next_state, done, next_valid_moves in batch:
             self.update_q_value(state, action, reward, next_state, next_valid_moves, done)
-    
+
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        self.curiosity_weight = max(0.01, self.curiosity_weight * self.curiosity_decay)
     
     def record_result(self, result):
         if result == 'win': self.wins += 1
