@@ -13,6 +13,9 @@ import ast
 # ============================================================================
 # Page Config and Initial Setup
 # ============================================================================
+# ============================================================================
+# Page Config and Initial Setup
+# ============================================================================
 st.set_page_config(
     page_title="RL Connect X",
     layout="wide",
@@ -28,7 +31,8 @@ A **two-player Connect X game** solved using **Pure Reinforcement Learning** wit
 2. **Train Agents**: Watch two RL agents learn through self-play
 3. **Play or Test**: Challenge the trained agent or watch it play!
 
-**Pure RL Magic!**
+**Pure RL Magic!** ✨
+> *⚠️ **Warning:** When you play against the AI, it unsheathes its secret weapon: **Minimax Search**! Things are about to get harder!*
 """)
 
 # ============================================================================
@@ -632,9 +636,9 @@ with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
     st.markdown("---")
     st.markdown("**AGI Thinking**")
     minimax_depth = st.slider(
-        "Lookahead Depth", 
+        "Thinking Depth", 
         min_value=0, 
-        max_value=4, 
+        max_value=100, 
         value=0, 
         help="0 = Pure RL (Intuition), >0 = RL + Tree Search (Calculation)"
     )
