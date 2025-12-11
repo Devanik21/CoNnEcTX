@@ -615,6 +615,13 @@ with st.sidebar.expander("1. Game Configuration", expanded=True):
         st.session_state.agent1 = None
         st.session_state.agent2 = None
         st.session_state.training_history = None
+        
+        # --- FIX: Clear the old recordings so they don't clash! ---
+        st.session_state.play_game = None
+        st.session_state.play_history = []
+        st.session_state.play_step = 0
+        # ----------------------------------------------------------
+        
         st.toast("New game created!", icon="🎮")
         st.rerun()
 
@@ -837,6 +844,7 @@ else:
         st.session_state.play_step = 0
 
     # Helper function to update view without full rerun
+    # Helper function to update view without full rerun
     def update_play_view(board_ph, info_ph, prog_ph):
         if not st.session_state.play_history:
             return
@@ -849,9 +857,16 @@ else:
         
         # Render Board
         with board_ph.container():
-            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
-            # Restore board state from history
-            temp_game.board = st.session_state.play_history[curr_step][0].copy()
+            # Get the board from history
+            history_board = st.session_state.play_history[curr_step][0]
+            
+            # --- FIX: Read dimensions directly from the saved board ---
+            # This ensures we never get an "IndexError" even if config changes
+            h_rows, h_cols = history_board.shape
+            temp_game = ConnectXGame(h_rows, h_cols, config['win_length'])
+            # ----------------------------------------------------------
+            
+            temp_game.board = history_board.copy()
             
             # If it's the last step, restore game status (win/loss)
             if curr_step == total_steps and st.session_state.play_game:
