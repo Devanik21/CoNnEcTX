@@ -9,7 +9,7 @@ import json
 import zipfile
 import io
 import ast
-import math  # <--- NEW IMPORT HERE
+
 # ============================================================================
 # Page Config and Initial Setup
 # ============================================================================
@@ -64,147 +64,28 @@ class ConnectXGame:
             return self.get_state(), -100, True, {'invalid': True}
         
         # Drop piece
-        row = -1
-        for r in range(self.rows - 1, -1, -1):
-            if self.board[r, col] == 0:
-                self.board[r, col] = self.current_player
-                self.last_move = (r, col)
-                row = r
+        for row in range(self.rows - 1, -1, -1):
+            if self.board[row, col] == 0:
+                self.board[row, col] = self.current_player
+                self.last_move = (row, col)
                 break
         
-        # 1. Check Win (Terminal Reward)
+        # Check win
         if self._check_win(row, col):
             self.game_over = True
             self.winner = self.current_player
-            return self.get_state(), 1000, True, {'winner': self.current_player} # Increased win reward
+            reward = 100  # Win!
+            return self.get_state(), reward, True, {'winner': self.current_player}
         
-        # 2. Check Draw
+        # Check draw
         if len(self.get_valid_moves()) == 0:
             self.game_over = True
-            return self.get_state(), 0, True, {'draw': True}
-        
-        # 3. INTERMEDIATE REWARDS (The Game Theory Part)
-        # We calculate a reward based on how "good" this move was strategically
-        strategic_reward = self.get_strategic_reward(self.current_player)
+            reward = 0  # Draw
+            return self.get_state(), reward, True, {'draw': True}
         
         # Switch player
-        self.current_player = 3 - self.current_player
-        
-        # Return state with the strategic reward added
-        return self.get_state(), strategic_reward, False, {}
-
-    def get_strategic_reward(self, piece):
-        """Calculates score for 2-in-a-row and 3-in-a-row opportunities"""
-        score = 0
-        opp_piece = 3 - piece
-        
-        # Center column preference (Game Theory: Center is strongest)
-        center_array = [int(i) for i in list(self.board[:, self.cols//2])]
-        center_count = center_array.count(piece)
-        score += center_count * 3
-
-        # Horizontal, Vertical, Diagonal checks for 3-in-a-rows
-        # We scan the whole board to reward 'structure'
-        
-        # Horizontal
-        for r in range(self.rows):
-            row_array = [int(i) for i in list(self.board[r,:])]
-            for c in range(self.cols - 3):
-                window = row_array[c:c+4]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Vertical
-        for c in range(self.cols):
-            col_array = [int(i) for i in list(self.board[:,c])]
-            for r in range(self.rows - 3):
-                window = col_array[r:r+4]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Positive Diagonal
-        for r in range(self.rows - 3):
-            for c in range(self.cols - 3):
-                window = [self.board[r+i][c+i] for i in range(4)]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Negative Diagonal
-        for r in range(self.rows - 3):
-            for c in range(self.cols - 3):
-                window = [self.board[r+3-i][c+i] for i in range(4)]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        return score
-
-    # ==========================================
-    # PASTE THIS INSIDE ConnectXGame CLASS
-    # REPLACING THE OLD evaluating functions
-    # ==========================================
-
-    # ==========================================
-    # PASTE THIS INSIDE ConnectXGame CLASS
-    # (Replace the old evaluate_window and score_position)
-    # ==========================================
-
-    def score_position(self, piece):
-        """Mathematically evaluates the board (Score = Me - Opponent)"""
-        score = 0
-        opp_piece = 1 if piece == 2 else 2
-
-        # 1. Center Column Preference (Control the center, control the game)
-        center_array = [int(i) for i in list(self.board[:, self.cols//2])]
-        center_count = center_array.count(piece)
-        score += center_count * 6  # Increased weight for center
-
-        # Scan the entire board
-        # Horizontal, Vertical, Diagonal
-        # We perform the loop logic here to be efficient
-        
-        # Horizontal
-        for r in range(self.rows):
-            row_array = [int(i) for i in list(self.board[r,:])]
-            for c in range(self.cols - self.win_length + 1):
-                window = row_array[c:c+self.win_length]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Vertical
-        for c in range(self.cols):
-            col_array = [int(i) for i in list(self.board[:,c])]
-            for r in range(self.rows - self.win_length + 1):
-                window = col_array[r:r+self.win_length]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Positive Diagonal
-        for r in range(self.rows - self.win_length + 1):
-            for c in range(self.cols - self.win_length + 1):
-                window = [self.board[r+i][c+i] for i in range(self.win_length)]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        # Negative Diagonal
-        for r in range(self.rows - self.win_length + 1):
-            for c in range(self.cols - self.win_length + 1):
-                window = [self.board[r+self.win_length-1-i][c+i] for i in range(self.win_length)]
-                score += self.evaluate_window(window, piece, opp_piece)
-
-        return score
-
-    def evaluate_window(self, window, piece, opp_piece):
-        score = 0
-        # Weights for "God Mode"
-        # We prioritize BLOCKING over everything else.
-        
-        # MY OPPORTUNITIES
-        if window.count(piece) == self.win_length:
-            score += 1000000  # Instant Win
-        elif window.count(piece) == self.win_length - 1 and window.count(0) == 1:
-            score += 100      # Good attack
-        elif window.count(piece) == self.win_length - 2 and window.count(0) == 2:
-            score += 5        # Decent build-up
-
-        # OPPONENT THREATS (The "Paranoid Defense")
-        # If opponent has 3/4, we MUST block. The penalty is HIGHER than the reward for attacking (100).
-        if window.count(opp_piece) == self.win_length - 1 and window.count(0) == 1:
-            score -= 5000     # DANGER! BLOCK IMMEDIATELY!
-
-        return score
+        self.current_player = 3 - self.current_player  # Toggle 1<->2
+        return self.get_state(), 0, False, {}
     
     def _check_win(self, row, col):
         """Check if last move resulted in a win"""
@@ -271,167 +152,145 @@ class ConnectXGame:
 # Pure RL Agent (Q-Learning with Self-Play)
 # ============================================================================
 
-# ============================================================================
-# Hybrid Agent (Minimax + Q-Learning Support)
-# ============================================================================
-
 class PureRLAgent:
     def __init__(self, player_id, lr=0.1, gamma=0.99, epsilon_decay=0.9995, epsilon_min=0.05):
         self.player_id = player_id
-        self.opp_player = 1 if player_id == 2 else 2
-        
-        # RL Parameters (still kept for hybrid learning)
         self.lr = lr
         self.gamma = gamma
-        self.epsilon = 0.1 # Lower epsilon because Minimax handles exploration better
+        self.epsilon = 1.0
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
-        self.q_table = {} 
         
-        # Stats
+        self.q_table = {}
+        self.init_q_value = 0.0
+        
+        # Advanced features
+        self.experience_buffer = deque(maxlen=50000)
+        self.model = {}  # State-action model
+        self.priority_queue = []
+        self.in_queue = set()
+        
+        # Tracking
+        self.episode_rewards = []
         self.wins = 0
         self.losses = 0
         self.draws = 0
-        self.experience_buffer = deque(maxlen=2000) # Smaller buffer needed
         self.invalid_moves = 0
-        self.model = {}
-
+        
+        # State visit counts for curiosity
+        self.visit_counts = {}
+        self.curiosity_weight = 0.5
+        self.curiosity_decay = 0.9995
+    
     def get_q_value(self, state, action):
-        return self.q_table.get((state, action), 0.0)
-
-    def choose_action(self, state, valid_moves, training=True, game_ref=None):
+        return self.q_table.get((state, action), self.init_q_value)
+    
+    def choose_action(self, state, valid_moves, training=True):
+        """Epsilon-greedy action selection with pure RL"""
         if not valid_moves:
             return None
-
-        # IF WE HAVE A BRAIN (Minimax), USE IT ALWAYS!
-        # Ignore epsilon if game_ref is provided to force smart play
-        if game_ref:
-            # Depth 4 is standard. Depth 5 is smarter but slower.
-            col, _ = self.minimax(game_ref, depth=4, alpha=-math.inf, beta=math.inf, maximizingPlayer=True)
-            return col
-
-        # Fallback for pure RL (Training without Minimax)
+        
         if training and random.random() < self.epsilon:
             return random.choice(valid_moves)
-
-    def is_terminal_node(self, game):
-        return game.game_over or len(game.get_valid_moves()) == 0
-
-    def minimax(self, game, depth, alpha, beta, maximizingPlayer):
-        valid_moves = game.get_valid_moves()
-        is_terminal = self.is_terminal_node(game)
         
-        if depth == 0 or is_terminal:
-            if is_terminal:
-                if game.winner == self.player_id:
-                    return (None, 100000000000000)
-                elif game.winner == self.opp_player:
-                    return (None, -10000000000000)
-                else: # Draw
-                    return (None, 0)
-            else: # Depth is zero
-                return (None, game.score_position(self.player_id))
-
-        if maximizingPlayer:
-            value = -math.inf
-            column = random.choice(valid_moves)
-            for col in valid_moves:
-                # Simulate Move
-                # We need to copy the board to not mess up the real game
-                temp_board = game.board.copy()
-                row = -1
-                for r in range(game.rows - 1, -1, -1):
-                    if game.board[r, col] == 0:
-                        game.board[r, col] = self.player_id
-                        row = r
-                        break
-                
-                # Check win status temporarily
-                game_over_cache = game.game_over
-                winner_cache = game.winner
-                current_player_cache = game.current_player
-                
-                if game._check_win(row, col):
-                    game.game_over = True
-                    game.winner = self.player_id
-                
-                game.current_player = self.opp_player # Switch turn for recursion
-                
-                new_score = self.minimax(game, depth-1, alpha, beta, False)[1]
-                
-                # Undo Move
-                game.board[row, col] = 0
-                game.game_over = game_over_cache
-                game.winner = winner_cache
-                game.current_player = current_player_cache
-                
-                if new_score > value:
-                    value = new_score
-                    column = col
-                
-                alpha = max(alpha, value)
-                if alpha >= beta:
-                    break
-            return column, value
-
-        else: # Minimizing Player
-            value = math.inf
-            column = random.choice(valid_moves)
-            for col in valid_moves:
-                # Simulate Move
-                temp_board = game.board.copy()
-                row = -1
-                for r in range(game.rows - 1, -1, -1):
-                    if game.board[r, col] == 0:
-                        game.board[r, col] = self.opp_player
-                        row = r
-                        break
-
-                # Check win status temporarily
-                game_over_cache = game.game_over
-                winner_cache = game.winner
-                current_player_cache = game.current_player
-                
-                if game._check_win(row, col):
-                    game.game_over = True
-                    game.winner = self.opp_player
-                
-                game.current_player = self.player_id # Switch turn
-                
-                new_score = self.minimax(game, depth-1, alpha, beta, True)[1]
-                
-                # Undo Move
-                game.board[row, col] = 0
-                game.game_over = game_over_cache
-                game.winner = winner_cache
-                game.current_player = current_player_cache
-                
-                if new_score < value:
-                    value = new_score
-                    column = col
-                
-                beta = min(beta, value)
-                if alpha >= beta:
-                    break
-            return column, value
-
-    # Keep these for compatibility with your existing Training Loop
+        # Greedy: pick best known action
+        q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+        max_q = max(q_values, key=lambda x: x[1])[1]
+        best_moves = [move for move, q in q_values if q == max_q]
+        return random.choice(best_moves)
+    
+    def get_intrinsic_reward(self, state):
+        """Curiosity-driven exploration bonus"""
+        visit_count = self.visit_counts.get(state, 0) + 1
+        self.visit_counts[state] = visit_count
+        
+        # Curiosity bonus decreases with visits
+        intrinsic = (self.curiosity_weight / np.sqrt(visit_count))
+        return intrinsic
+    
     def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
-        pass # Minimax doesn't strictly need Q-updates, but we keep the method to prevent errors
+        """Q-learning update with intrinsic motivation"""
+        # Add curiosity bonus
+        intrinsic_reward = self.get_intrinsic_reward(state)
+        total_reward = reward + intrinsic_reward
+        
+        current_q = self.get_q_value(state, action)
+        
+        if done:
+            target = total_reward
+        else:
+            # Max Q of next state
+            if next_valid_moves:
+                max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
+            else:
+                max_next_q = 0
+            target = total_reward + self.gamma * max_next_q
+        
+        # Update
+        new_q = current_q + self.lr * (target - current_q)
+        self.q_table[(state, action)] = new_q
+        
+        # Store in model
+        self.model[(state, action)] = (next_state, total_reward, done)
+        
+        # Prioritized sweeping
+        td_error = abs(target - current_q)
+        if td_error > 0.1:
+            self.prioritized_update(state, action, td_error)
+        
+        return td_error
+    
+    def prioritized_update(self, state, action, priority, max_queue_size=1000):
+        if (state, action) not in self.in_queue:
+            if len(self.priority_queue) >= max_queue_size:
+                heappop(self.priority_queue)
+            heappush(self.priority_queue, (-abs(priority), state, action))
+            self.in_queue.add((state, action))
+    
+    def planning_step(self, n_steps=10):
+        """Dyna-Q style planning"""
+        for _ in range(min(n_steps, len(self.priority_queue))):
+            if not self.priority_queue:
+                break
+            
+            _, state, action = heappop(self.priority_queue)
+            self.in_queue.discard((state, action))
+            
+            if (state, action) in self.model:
+                next_state, reward, done = self.model[(state, action)]
+                current_q = self.get_q_value(state, action)
+                
+                if done:
+                    target = reward
+                else:
+                    # We don't have valid moves stored, so assume all moves possible
+                    max_next_q = max([self.get_q_value(next_state, a) for a in range(7)], default=0)
+                    target = reward + self.gamma * max_next_q
+                
+                new_q = current_q + self.lr * (target - current_q)
+                self.q_table[(state, action)] = new_q
     
     def experience_replay(self, batch_size=32):
-        pass 
+        """Learn from past experiences"""
+        if len(self.experience_buffer) < batch_size:
+            return
         
-    def planning_step(self, n_steps=10):
-        pass
-
+        batch = random.sample(self.experience_buffer, batch_size)
+        for state, action, reward, next_state, done, next_valid_moves in batch:
+            self.update_q_value(state, action, reward, next_state, next_valid_moves, done)
+    
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        self.curiosity_weight = max(0.01, self.curiosity_weight * self.curiosity_decay)
     
     def record_result(self, result):
-        if result == 'win': self.wins += 1
-        elif result == 'loss': self.losses += 1
-        elif result == 'draw': self.draws += 1
+        """Track game outcomes"""
+        if result == 'win':
+            self.wins += 1
+        elif result == 'loss':
+            self.losses += 1
+        elif result == 'draw':
+            self.draws += 1
 
 # ============================================================================
 # Self-Play Training
@@ -451,8 +310,7 @@ def train_self_play(game, agent1, agent2, max_moves=100):
             break
         
         # Agent chooses action
-        # PASS THE GAME OBJECT SO MINIMAX CAN SEE THE FUTURE
-        action = agent.choose_action(state, valid_moves, training=True, game_ref=game)
+        action = agent.choose_action(state, valid_moves, training=True)
         history.append((state, action, current_player))
         
         # Execute move
@@ -682,16 +540,12 @@ train_button = st.sidebar.button("🚀 Train Agents (Self-Play)", use_container_
 st.sidebar.divider()
 
 if st.sidebar.button("Clear Memory", use_container_width=True):
-    # UPDATED: Added 'play_game', 'play_history', 'play_step' to the list
-    keys_to_clear = [
-        'game', 'agent1', 'agent2', 'training_history', 'game_config', 
-        'play_game', 'play_history', 'play_step'
-    ]
-    for key in keys_to_clear:
+    for key in ['game', 'agent1', 'agent2', 'training_history', 'game_config']:
         if key in st.session_state:
             del st.session_state[key]
     st.toast("Memory cleared!", icon="🧼")
     st.rerun()
+
 # ============================================================================
 # Main Area
 # ============================================================================
@@ -840,9 +694,33 @@ else:
     st.subheader("🎮 Interactive Play")
     
     # Initialize play session state
-    # Initialize play session state
-    # UPDATED: Check for 'play_step' as well to prevent KeyErrors
-    if 'play_game' not in st.session_state or 'play_step' not in st.session_state:
+    # UPDATED: Define a function to update the interactive play UI without a full rerun
+    def update_play_view(board_placeholder, info_placeholder, progress_placeholder):
+        current_step = st.session_state.play_step
+        total_steps = len(st.session_state.play_history) - 1
+
+        progress_placeholder.progress(current_step / max(total_steps, 1))
+
+        # Render the board
+        with board_placeholder.container():
+            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
+            temp_game.board = st.session_state.play_history[current_step][0].copy()
+            if current_step == total_steps:
+                temp_game.game_over = st.session_state.play_game.game_over
+                temp_game.winner = st.session_state.play_game.winner
+            fig = temp_game.render()
+            st.pyplot(fig)
+            plt.close()
+
+        # Render the move info
+        with info_placeholder.container():
+            st.markdown(f"### Move {current_step} / {total_steps}")
+            if current_step > 0:
+                _, player, col = st.session_state.play_history[current_step]
+                st.markdown(f"**Player {player}** {'🔴' if player == 1 else '🟡'}")
+                st.markdown(f"**Dropped in Column:** {col + 1}")
+
+    if 'play_game' not in st.session_state:
         st.session_state.play_game = None
         st.session_state.play_history = []
         st.session_state.play_step = 0
@@ -867,7 +745,7 @@ else:
                 if not valid_moves:
                     break
                 
-                action = agent.choose_action(state, valid_moves, training=False, game_ref=test_game)
+                action = agent.choose_action(state, valid_moves, training=False)
                 state, reward, done, info = test_game.make_move(action)
                 play_history.append((test_game.board.copy(), current_player, action))
                 move_count += 1
@@ -877,75 +755,53 @@ else:
             st.session_state.play_history = play_history
             st.session_state.play_step = 0
             st.rerun()
-    
+
+    # Create placeholders for the dynamic content
+    progress_placeholder = st.empty()
+    col_display1, col_display2 = st.columns([2, 1])
+    board_placeholder = col_display1.empty()
+    info_placeholder = col_display2.empty()
+
     with play_col2:
         if st.session_state.play_game is not None and st.session_state.play_step < len(st.session_state.play_history) - 1:
             if st.button("➡️ Next Move", use_container_width=True):
                 st.session_state.play_step += 1
-                st.rerun()
+                # No rerun, just update the placeholders
+                update_play_view(board_placeholder, info_placeholder, progress_placeholder)
     
     with play_col3:
         if st.session_state.play_game is not None and st.session_state.play_step > 0:
             if st.button("⬅️ Previous Move", use_container_width=True):
                 st.session_state.play_step -= 1
-                st.rerun()
+                # No rerun, just update the placeholders
+                update_play_view(board_placeholder, info_placeholder, progress_placeholder)
     
     # Display current move
     if st.session_state.play_game is not None:
-        current_step = st.session_state.play_step
-        total_steps = len(st.session_state.play_history) - 1
-        
-        st.progress(current_step / max(total_steps, 1))
-        
-        col_display1, col_display2 = st.columns([2, 1])
-        
-        with col_display1:
-            # Create a temporary game object to render current board state
-            temp_game = ConnectXGame(config['rows'], config['cols'], config['win_length'])
-            temp_game.board = st.session_state.play_history[current_step][0].copy()
-            
-            # Check if game is over at this step
-            if current_step == total_steps:
-                temp_game.game_over = st.session_state.play_game.game_over
-                temp_game.winner = st.session_state.play_game.winner
-            
-            fig = temp_game.render()
-            st.pyplot(fig)
-            plt.close()
-        
-        with col_display2:
-            st.markdown(f"### Move {current_step} / {total_steps}")
-            
-            if current_step > 0:
-                board_state, player, col = st.session_state.play_history[current_step]
-                st.markdown(f"**Player {player}** {'🔴' if player == 1 else '🟡'}")
-                st.markdown(f"**Dropped in Column:** {col + 1}")
-            else:
-                st.markdown("**Game Start**")
-            
-            st.divider()
-            
-            # Show final result if at the end
-            if current_step == total_steps and st.session_state.play_game.game_over:
+        # Initial draw
+        update_play_view(board_placeholder, info_placeholder, progress_placeholder)
+
+        # Display final result and quick navigation which don't need instant updates
+        with info_placeholder.container():
+            if st.session_state.play_step == len(st.session_state.play_history) - 1 and st.session_state.play_game.game_over:
+                st.divider()
                 if st.session_state.play_game.winner:
                     winner = st.session_state.play_game.winner
                     st.success(f"🏆 Player {winner} {'🔴' if winner == 1 else '🟡'} Wins!")
                 else:
                     st.info("🤝 Draw!")
-                st.metric("Total Moves", total_steps)
-            
-            # Quick navigation
-            st.divider()
-            st.markdown("**Quick Jump:**")
-            jump_col1, jump_col2 = st.columns(2)
-            with jump_col1:
-                if st.button("⏮️ Start", use_container_width=True):
-                    st.session_state.play_step = 0
-                    st.rerun()
-            with jump_col2:
-                if st.button("⏭️ End", use_container_width=True):
-                    st.session_state.play_step = total_steps
-                    st.rerun()
+                st.metric("Total Moves", len(st.session_state.play_history) - 1)
+
+        # Quick navigation still needs a rerun, but it's less frequently used
+        st.divider()
+        st.markdown("**Quick Jump:**")
+        jump_col1, jump_col2 = st.columns(2)
+        if jump_col1.button("⏮️ Start", use_container_width=True):
+            st.session_state.play_step = 0
+            st.rerun()
+        if jump_col2.button("⏭️ End", use_container_width=True):
+            st.session_state.play_step = len(st.session_state.play_history) - 1
+            st.rerun()
     else:
         st.info("👆 Click 'New Game' to watch the agents play!")
     
