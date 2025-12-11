@@ -64,28 +64,90 @@ class ConnectXGame:
             return self.get_state(), -100, True, {'invalid': True}
         
         # Drop piece
-        for row in range(self.rows - 1, -1, -1):
-            if self.board[row, col] == 0:
-                self.board[row, col] = self.current_player
-                self.last_move = (row, col)
+        row = -1
+        for r in range(self.rows - 1, -1, -1):
+            if self.board[r, col] == 0:
+                self.board[r, col] = self.current_player
+                self.last_move = (r, col)
+                row = r
                 break
         
-        # Check win
+        # 1. Check Win (Terminal Reward)
         if self._check_win(row, col):
             self.game_over = True
             self.winner = self.current_player
-            reward = 100  # Win!
-            return self.get_state(), reward, True, {'winner': self.current_player}
+            return self.get_state(), 1000, True, {'winner': self.current_player} # Increased win reward
         
-        # Check draw
+        # 2. Check Draw
         if len(self.get_valid_moves()) == 0:
             self.game_over = True
-            reward = 0  # Draw
-            return self.get_state(), reward, True, {'draw': True}
+            return self.get_state(), 0, True, {'draw': True}
+        
+        # 3. INTERMEDIATE REWARDS (The Game Theory Part)
+        # We calculate a reward based on how "good" this move was strategically
+        strategic_reward = self.get_strategic_reward(self.current_player)
         
         # Switch player
-        self.current_player = 3 - self.current_player  # Toggle 1<->2
-        return self.get_state(), 0, False, {}
+        self.current_player = 3 - self.current_player
+        
+        # Return state with the strategic reward added
+        return self.get_state(), strategic_reward, False, {}
+
+    def get_strategic_reward(self, piece):
+        """Calculates score for 2-in-a-row and 3-in-a-row opportunities"""
+        score = 0
+        opp_piece = 3 - piece
+        
+        # Center column preference (Game Theory: Center is strongest)
+        center_array = [int(i) for i in list(self.board[:, self.cols//2])]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Horizontal, Vertical, Diagonal checks for 3-in-a-rows
+        # We scan the whole board to reward 'structure'
+        
+        # Horizontal
+        for r in range(self.rows):
+            row_array = [int(i) for i in list(self.board[r,:])]
+            for c in range(self.cols - 3):
+                window = row_array[c:c+4]
+                score += self.evaluate_window(window, piece, opp_piece)
+
+        # Vertical
+        for c in range(self.cols):
+            col_array = [int(i) for i in list(self.board[:,c])]
+            for r in range(self.rows - 3):
+                window = col_array[r:r+4]
+                score += self.evaluate_window(window, piece, opp_piece)
+
+        # Positive Diagonal
+        for r in range(self.rows - 3):
+            for c in range(self.cols - 3):
+                window = [self.board[r+i][c+i] for i in range(4)]
+                score += self.evaluate_window(window, piece, opp_piece)
+
+        # Negative Diagonal
+        for r in range(self.rows - 3):
+            for c in range(self.cols - 3):
+                window = [self.board[r+3-i][c+i] for i in range(4)]
+                score += self.evaluate_window(window, piece, opp_piece)
+
+        return score
+
+    def evaluate_window(self, window, piece, opp_piece):
+        score = 0
+        # Aggressive: Reward creating threats
+        if window.count(piece) == 3 and window.count(0) == 1:
+            score += 15  # Good! Almost won
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 5   # Decent setup
+
+        # Defensive: We penalize the board state if opponent has 3 (meaning we failed to block previously)
+        # But for intermediate rewards, we focus on *our* structure.
+        # The agent learns defense because if it DOESN'T block, the opponent wins next turn 
+        # and the agent gets -1000.
+        
+        return score
     
     def _check_win(self, row, col):
         """Check if last move resulted in a win"""
@@ -209,8 +271,39 @@ class PureRLAgent:
         return intrinsic
     
     def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
-        """Q-learning update with intrinsic motivation"""
-        # Add curiosity bonus
+        """Q-learning update with Symmetry Optimization"""
+        
+        # 1. Standard Update
+        td_error = self._perform_single_update(state, action, reward, next_state, next_valid_moves, done)
+        
+        # 2. Symmetry Update (Mirror the board)
+        # Convert state tuple back to numpy, flip it, convert back to tuple
+        state_arr = np.array(state)
+        flipped_state_arr = np.fliplr(state_arr)
+        flipped_state = tuple(map(tuple, flipped_state_arr))
+        
+        # Flip the action (column) too. If col is 0 (far left), it becomes 6 (far right)
+        # assuming 7 columns. 
+        cols = len(state_arr[0])
+        flipped_action = cols - 1 - action
+        
+        # We need the next state flipped as well to calculate target
+        next_state_arr = np.array(next_state)
+        flipped_next_state = tuple(map(tuple, np.fliplr(next_state_arr)))
+        
+        # Flip valid moves for the next state
+        if next_valid_moves:
+            flipped_next_valid = [cols - 1 - c for c in next_valid_moves]
+        else:
+            flipped_next_valid = []
+
+        # Perform the update on the mirrored state
+        self._perform_single_update(flipped_state, flipped_action, reward, flipped_next_state, flipped_next_valid, done)
+        
+        return td_error
+
+    def _perform_single_update(self, state, action, reward, next_state, next_valid_moves, done):
+        """Helper to perform the math for Q-update"""
         intrinsic_reward = self.get_intrinsic_reward(state)
         total_reward = reward + intrinsic_reward
         
@@ -219,26 +312,19 @@ class PureRLAgent:
         if done:
             target = total_reward
         else:
-            # Max Q of next state
             if next_valid_moves:
                 max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
             else:
                 max_next_q = 0
             target = total_reward + self.gamma * max_next_q
         
-        # Update
         new_q = current_q + self.lr * (target - current_q)
         self.q_table[(state, action)] = new_q
         
-        # Store in model
+        # Store in model for Dyna-Q
         self.model[(state, action)] = (next_state, total_reward, done)
         
-        # Prioritized sweeping
-        td_error = abs(target - current_q)
-        if td_error > 0.1:
-            self.prioritized_update(state, action, td_error)
-        
-        return td_error
+        return abs(target - current_q)
     
     def prioritized_update(self, state, action, priority, max_queue_size=1000):
         if (state, action) not in self.in_queue:
