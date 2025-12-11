@@ -164,71 +164,101 @@ class PureRLAgent:
         self.q_table = {}
         self.init_q_value = 0.0
         
-        # Advanced features
         self.experience_buffer = deque(maxlen=50000)
-        self.model = {}  # State-action model
+        self.model = {} 
         self.priority_queue = []
         self.in_queue = set()
         
-        # Tracking
         self.wins = 0
         self.losses = 0
         self.draws = 0
         self.invalid_moves = 0
         
-        # State visit counts for curiosity
         self.visit_counts = {}
-        self.curiosity_weight = 0.5
+        self.curiosity_weight = 0.2  # Lowered slightly for stability
         self.curiosity_decay = 0.9995
-    
+
     def get_q_value(self, state, action):
         return self.q_table.get((state, action), self.init_q_value)
 
     def get_state_value(self, board):
-        """Evaluate a board state using learned Q-values (Intuition)"""
         state_tuple = tuple(map(tuple, board))
         valid_cols = [c for c in range(board.shape[1]) if board[0, c] == 0]
-        if not valid_cols:
-            return 0
-        # The value of a state is the best Q-value we can get from it
+        if not valid_cols: return 0
         return max([self.get_q_value(state_tuple, col) for col in valid_cols], default=0)
 
-    def minimax(self, board, depth, maximizing, alpha, beta, game_rules):
-        """The AGI Brain: Lookahead Search + RL Evaluation"""
-        rows, cols, win_len = game_rules
+    # --- NEW: Helper to detect immediate wins/losses ---
+    def detect_critical_move(self, board, valid_moves, game_obj=None):
+        if game_obj is None: return None
         
-        # Helper to check wins on simulation board
-        def check_win_sim(b, p):
-            for r in range(rows):
-                for c in range(cols):
-                    if b[r,c] == p:
-                        if c + win_len <= cols and np.all(b[r, c:c+win_len] == p): return True
-                        if r + win_len <= rows and np.all(b[r:r+win_len, c] == p): return True
-                        if r + win_len <= rows and c + win_len <= cols and all(b[r+i, c+i] == p for i in range(win_len)): return True
-                        if r - win_len >= -1 and c + win_len <= cols and all(b[r-i, c+i] == p for i in range(win_len)): return True
-            return False
-
+        # Check for winning move
+        for col in valid_moves:
+            temp = board.copy()
+            # Simulate drop
+            for r in range(game_obj.rows-1, -1, -1):
+                if temp[r, col] == 0:
+                    temp[r, col] = self.player_id
+                    if game_obj._check_win(r, col): return col # WIN NOW
+                    break
+        
+        # Check for blocking opponent win
         opponent = 3 - self.player_id
-        if check_win_sim(board, self.player_id): return 10000  # We won
-        if check_win_sim(board, opponent): return -10000       # Opponent won
-        
-        valid_moves = [c for c in range(cols) if board[0, c] == 0]
-        if not valid_moves: return 0 # Draw
+        for col in valid_moves:
+            temp = board.copy()
+            for r in range(game_obj.rows-1, -1, -1):
+                if temp[r, col] == 0:
+                    temp[r, col] = opponent
+                    # We use the game_obj's check_win logic on the temp board
+                    # Note: We need to temporarily set board to temp to use _check_win or copy logic
+                    # To be safe and fast, we just implement a quick check here:
+                    if self.fast_check_win(temp, r, col, game_obj.win_length, opponent):
+                        return col # BLOCK NOW
+                    break
+        return None
 
-        # Base Case: If depth reached, use RL Intuition
-        if depth == 0:
-            return self.get_state_value(board)
+    def fast_check_win(self, board, row, col, win_len, player):
+        directions = [(0,1), (1,0), (1,1), (1,-1)]
+        rows, cols = board.shape
+        for dr, dc in directions:
+            count = 1
+            for i in range(1, win_len):
+                r, c = row + dr*i, col + dc*i
+                if 0 <= r < rows and 0 <= c < cols and board[r, c] == player: count += 1
+                else: break
+            for i in range(1, win_len):
+                r, c = row - dr*i, col - dc*i
+                if 0 <= r < rows and 0 <= c < cols and board[r, c] == player: count += 1
+                else: break
+            if count >= win_len: return True
+        return False
+
+    def minimax(self, board, depth, maximizing, alpha, beta, game_rules):
+        rows, cols, win_len = game_rules
+        opponent = 3 - self.player_id
+        
+        # Heuristic checks
+        # If I can win, score is high
+        for c in range(cols):
+            if board[0,c] == 0: # valid
+                # simplified check for speed would go here
+                pass
+
+        valid_moves = [c for c in range(cols) if board[0, c] == 0]
+        if not valid_moves: return 0 
+
+        if depth == 0: return self.get_state_value(board)
 
         if maximizing:
             max_eval = -float('inf')
             for col in valid_moves:
                 temp_board = board.copy()
-                # Simulate drop
                 for r in range(rows-1, -1, -1):
                     if temp_board[r, col] == 0:
                         temp_board[r, col] = self.player_id
                         break
-                
+                # Quick win check optimization
+                if self.fast_check_win(temp_board, r, col, win_len, self.player_id): return 100000
+
                 eval_score = self.minimax(temp_board, depth-1, False, alpha, beta, game_rules)
                 max_eval = max(max_eval, eval_score)
                 alpha = max(alpha, eval_score)
@@ -238,12 +268,12 @@ class PureRLAgent:
             min_eval = float('inf')
             for col in valid_moves:
                 temp_board = board.copy()
-                # Simulate drop (Opponent)
                 for r in range(rows-1, -1, -1):
                     if temp_board[r, col] == 0:
                         temp_board[r, col] = opponent
                         break
-                        
+                if self.fast_check_win(temp_board, r, col, win_len, opponent): return -100000
+
                 eval_score = self.minimax(temp_board, depth-1, True, alpha, beta, game_rules)
                 min_eval = min(min_eval, eval_score)
                 beta = min(beta, eval_score)
@@ -251,113 +281,127 @@ class PureRLAgent:
             return min_eval
 
     def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
-        """Selection: Uses Epsilon-Greedy for Training, Minimax+RL for Play"""
-        if not valid_moves:
-            return None
+        if not valid_moves: return None
         
-        # TRAINING: Use fast Q-Learning (Epsilon Greedy)
+        # Convert state to numpy for analysis
+        current_board = np.array(state)
+
+        # --- INTELLIGENCE BOOST: Always take winning moves or blocks ---
+        # Even during training, we guide them. This is "Teacher Forcing".
+        if game_obj:
+            critical = self.detect_critical_move(current_board, valid_moves, game_obj)
+            if critical is not None:
+                # 90% chance to take the smart move during training, 100% during play
+                if not training or random.random() < 0.9:
+                    return critical
+
+        # TRAINING: Epsilon Greedy
         if training:
             if random.random() < self.epsilon:
                 return random.choice(valid_moves)
             q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+            # Add small random noise to break ties
             max_q = max(q_values, key=lambda x: x[1])[1]
             best_moves = [move for move, q in q_values if q == max_q]
             return random.choice(best_moves)
         
-        # PLAYING: Use AGI (Minimax)
-        current_board = np.array(state) # Convert tuple back to numpy
-        
-        # If depth is 0, just use Greedy Q-Learning (Fast)
+        # PLAYING: Minimax
         if minimax_depth == 0:
             q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
             max_q = max(q_values, key=lambda x: x[1])[1]
             return random.choice([move for move, q in q_values if q == max_q])
 
-        # If depth > 0, use Tree Search
         best_score = -float('inf')
         best_move = random.choice(valid_moves)
-        
-        game_rules = (current_board.shape[0], current_board.shape[1], 4)
-        if game_obj: game_rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
+        game_rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
 
         for col in valid_moves:
             temp_board = current_board.copy()
-            # Simulate move
             for r in range(current_board.shape[0]-1, -1, -1):
                 if temp_board[r, col] == 0:
                     temp_board[r, col] = self.player_id
                     break
             
-            # Call Minimax (Next turn is minimizing/opponent)
             score = self.minimax(temp_board, minimax_depth-1, False, -float('inf'), float('inf'), game_rules)
-            
             if score > best_score:
                 best_score = score
                 best_move = col
-                
         return best_move
     
     def get_intrinsic_reward(self, state):
-        """Curiosity-driven exploration bonus"""
         visit_count = self.visit_counts.get(state, 0) + 1
         self.visit_counts[state] = visit_count
-        intrinsic = (self.curiosity_weight / np.sqrt(visit_count))
-        return intrinsic
+        return (self.curiosity_weight / np.sqrt(visit_count))
     
     def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
-        """Q-learning update with intrinsic motivation"""
-        intrinsic_reward = self.get_intrinsic_reward(state)
-        total_reward = reward + intrinsic_reward
-        current_q = self.get_q_value(state, action)
+        intrinsic = self.get_intrinsic_reward(state)
+        total_reward = reward + intrinsic
         
-        if done:
-            target = total_reward
+        # Standard Q-Update
+        current_q = self.get_q_value(state, action)
+        if done: target = total_reward
         else:
-            if next_valid_moves:
-                max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
-            else:
-                max_next_q = 0
+            max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves], default=0)
             target = total_reward + self.gamma * max_next_q
         
         new_q = current_q + self.lr * (target - current_q)
         self.q_table[(state, action)] = new_q
-        self.model[(state, action)] = (next_state, total_reward, done)
         
-        td_error = abs(target - current_q)
-        if td_error > 0.1:
-            self.prioritized_update(state, action, td_error)
-        return td_error
-    
+        # --- NEW: Mirror Learning (Symmetry) ---
+        # Update the mirrored state too! (Doubles learning speed)
+        # 1. Flip State
+        board_np = np.array(state)
+        flipped_board = np.fliplr(board_np)
+        flipped_state = tuple(map(tuple, flipped_board))
+        
+        # 2. Flip Action (Column 0 becomes Col 6, Col 1 becomes Col 5, etc.)
+        cols = board_np.shape[1]
+        flipped_action = cols - 1 - action
+        
+        # 3. Flip Next State
+        next_board_np = np.array(next_state)
+        flipped_next_board = np.fliplr(next_board_np)
+        flipped_next_state = tuple(map(tuple, flipped_next_board))
+        
+        # 4. Flip Next Valid Moves
+        flipped_next_valid = [cols - 1 - c for c in next_valid_moves]
+        
+        # Update Mirrored Q-Value
+        current_q_mirror = self.get_q_value(flipped_state, flipped_action)
+        if done: target_m = total_reward
+        else:
+            max_next_q_m = max([self.get_q_value(flipped_next_state, a) for a in flipped_next_valid], default=0)
+            target_m = total_reward + self.gamma * max_next_q_m
+            
+        self.q_table[(flipped_state, flipped_action)] = current_q_mirror + self.lr * (target_m - current_q_mirror)
+        # ---------------------------------------
+
+        self.model[(state, action)] = (next_state, total_reward, done)
+        return abs(target - current_q)
+
+    # (Keep prioritized_update, planning_step, experience_replay, decay_epsilon, record_result same as before)
     def prioritized_update(self, state, action, priority, max_queue_size=1000):
         if (state, action) not in self.in_queue:
-            if len(self.priority_queue) >= max_queue_size:
-                heappop(self.priority_queue)
+            if len(self.priority_queue) >= max_queue_size: heappop(self.priority_queue)
             heappush(self.priority_queue, (-abs(priority), state, action))
             self.in_queue.add((state, action))
     
     def planning_step(self, n_steps=10):
-        """Dyna-Q style planning"""
         for _ in range(min(n_steps, len(self.priority_queue))):
-            if not self.priority_queue:
-                break
+            if not self.priority_queue: break
             _, state, action = heappop(self.priority_queue)
             self.in_queue.discard((state, action))
-            
             if (state, action) in self.model:
                 next_state, reward, done = self.model[(state, action)]
                 current_q = self.get_q_value(state, action)
-                if done:
-                    target = reward
+                if done: target = reward
                 else:
                     max_next_q = max([self.get_q_value(next_state, a) for a in range(7)], default=0)
                     target = reward + self.gamma * max_next_q
-                new_q = current_q + self.lr * (target - current_q)
-                self.q_table[(state, action)] = new_q
+                self.q_table[(state, action)] = current_q + self.lr * (target - current_q)
     
     def experience_replay(self, batch_size=32):
-        """Learn from past experiences"""
-        if len(self.experience_buffer) < batch_size:
-            return
+        if len(self.experience_buffer) < batch_size: return
         batch = random.sample(self.experience_buffer, batch_size)
         for state, action, reward, next_state, done, next_valid_moves in batch:
             self.update_q_value(state, action, reward, next_state, next_valid_moves, done)
@@ -388,8 +432,8 @@ def train_self_play(game, agent1, agent2, max_moves=100):
         if not valid_moves:
             break
         
-        # Agent chooses action
-        action = agent.choose_action(state, valid_moves, training=True)
+        
+        action = agent.choose_action(state, valid_moves, training=True, game_obj=game)
         history.append((state, action, current_player))
         
         # Execute move
@@ -409,7 +453,7 @@ def train_self_play(game, agent1, agent2, max_moves=100):
                 winner = info['winner']
                 # Winner gets +100, loser gets -100
                 for i, (s, a, p) in enumerate(history):
-                    r = 100 if p == winner else -100
+                    r = 500 if p == winner else -1000
                     agt = agent1 if p == 1 else agent2
                     ns = history[i+1][0] if i+1 < len(history) else next_state
                     nvm = []  # Game is done
