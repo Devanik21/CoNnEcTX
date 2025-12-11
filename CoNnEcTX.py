@@ -721,7 +721,7 @@ else:
     
     # Training
     if train_button:
-        st.subheader("🏋️ Training in Progress...")
+        st.subheader("Training in Progress...")
         
         progress_bar = st.progress(0)
         status_container = st.empty()
@@ -732,7 +732,7 @@ else:
         win_rates = []
         
         for episode in range(1, episodes + 1):
-            result, moves = train_self_play(game, agent1, agent2, max_moves)
+            result, moves = train_self_play(game, agent1, agent2, max_moves, train_depth=train_depth)
             
             if result == 'p1_win':
                 p1_wins += 1
