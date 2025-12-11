@@ -171,7 +171,6 @@ class PureRLAgent:
         self.in_queue = set()
         
         # Tracking
-        self.episode_rewards = []
         self.wins = 0
         self.losses = 0
         self.draws = 0
@@ -184,60 +183,149 @@ class PureRLAgent:
     
     def get_q_value(self, state, action):
         return self.q_table.get((state, action), self.init_q_value)
-    
-    def choose_action(self, state, valid_moves, training=True):
-        """Epsilon-greedy action selection with pure RL"""
+
+    def get_state_value(self, board):
+        """Evaluate a board state using learned Q-values (Intuition)"""
+        state_tuple = tuple(map(tuple, board))
+        valid_cols = [c for c in range(board.shape[1]) if board[0, c] == 0]
+        if not valid_cols:
+            return 0
+        # The value of a state is the best Q-value we can get from it
+        return max([self.get_q_value(state_tuple, col) for col in valid_cols], default=0)
+
+    def minimax(self, board, depth, maximizing, alpha, beta, game_rules):
+        """The AGI Brain: Lookahead Search + RL Evaluation"""
+        rows, cols, win_len = game_rules
+        
+        # Helper to check wins on simulation board
+        def check_win_sim(b, p):
+            for r in range(rows):
+                for c in range(cols):
+                    if b[r,c] == p:
+                        if c + win_len <= cols and np.all(b[r, c:c+win_len] == p): return True
+                        if r + win_len <= rows and np.all(b[r:r+win_len, c] == p): return True
+                        if r + win_len <= rows and c + win_len <= cols and all(b[r+i, c+i] == p for i in range(win_len)): return True
+                        if r - win_len >= -1 and c + win_len <= cols and all(b[r-i, c+i] == p for i in range(win_len)): return True
+            return False
+
+        opponent = 3 - self.player_id
+        if check_win_sim(board, self.player_id): return 10000  # We won
+        if check_win_sim(board, opponent): return -10000       # Opponent won
+        
+        valid_moves = [c for c in range(cols) if board[0, c] == 0]
+        if not valid_moves: return 0 # Draw
+
+        # Base Case: If depth reached, use RL Intuition
+        if depth == 0:
+            return self.get_state_value(board)
+
+        if maximizing:
+            max_eval = -float('inf')
+            for col in valid_moves:
+                temp_board = board.copy()
+                # Simulate drop
+                for r in range(rows-1, -1, -1):
+                    if temp_board[r, col] == 0:
+                        temp_board[r, col] = self.player_id
+                        break
+                
+                eval_score = self.minimax(temp_board, depth-1, False, alpha, beta, game_rules)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha: break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                temp_board = board.copy()
+                # Simulate drop (Opponent)
+                for r in range(rows-1, -1, -1):
+                    if temp_board[r, col] == 0:
+                        temp_board[r, col] = opponent
+                        break
+                        
+                eval_score = self.minimax(temp_board, depth-1, True, alpha, beta, game_rules)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha: break
+            return min_eval
+
+    def choose_action(self, state, valid_moves, training=True, game_obj=None, minimax_depth=0):
+        """Selection: Uses Epsilon-Greedy for Training, Minimax+RL for Play"""
         if not valid_moves:
             return None
         
-        if training and random.random() < self.epsilon:
-            return random.choice(valid_moves)
+        # TRAINING: Use fast Q-Learning (Epsilon Greedy)
+        if training:
+            if random.random() < self.epsilon:
+                return random.choice(valid_moves)
+            q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+            max_q = max(q_values, key=lambda x: x[1])[1]
+            best_moves = [move for move, q in q_values if q == max_q]
+            return random.choice(best_moves)
         
-        # Greedy: pick best known action
-        q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
-        max_q = max(q_values, key=lambda x: x[1])[1]
-        best_moves = [move for move, q in q_values if q == max_q]
-        return random.choice(best_moves)
+        # PLAYING: Use AGI (Minimax)
+        current_board = np.array(state) # Convert tuple back to numpy
+        
+        # If depth is 0, just use Greedy Q-Learning (Fast)
+        if minimax_depth == 0:
+            q_values = [(move, self.get_q_value(state, move)) for move in valid_moves]
+            max_q = max(q_values, key=lambda x: x[1])[1]
+            return random.choice([move for move, q in q_values if q == max_q])
+
+        # If depth > 0, use Tree Search
+        best_score = -float('inf')
+        best_move = random.choice(valid_moves)
+        
+        game_rules = (current_board.shape[0], current_board.shape[1], 4)
+        if game_obj: game_rules = (game_obj.rows, game_obj.cols, game_obj.win_length)
+
+        for col in valid_moves:
+            temp_board = current_board.copy()
+            # Simulate move
+            for r in range(current_board.shape[0]-1, -1, -1):
+                if temp_board[r, col] == 0:
+                    temp_board[r, col] = self.player_id
+                    break
+            
+            # Call Minimax (Next turn is minimizing/opponent)
+            score = self.minimax(temp_board, minimax_depth-1, False, -float('inf'), float('inf'), game_rules)
+            
+            if score > best_score:
+                best_score = score
+                best_move = col
+                
+        return best_move
     
     def get_intrinsic_reward(self, state):
         """Curiosity-driven exploration bonus"""
         visit_count = self.visit_counts.get(state, 0) + 1
         self.visit_counts[state] = visit_count
-        
-        # Curiosity bonus decreases with visits
         intrinsic = (self.curiosity_weight / np.sqrt(visit_count))
         return intrinsic
     
     def update_q_value(self, state, action, reward, next_state, next_valid_moves, done):
         """Q-learning update with intrinsic motivation"""
-        # Add curiosity bonus
         intrinsic_reward = self.get_intrinsic_reward(state)
         total_reward = reward + intrinsic_reward
-        
         current_q = self.get_q_value(state, action)
         
         if done:
             target = total_reward
         else:
-            # Max Q of next state
             if next_valid_moves:
                 max_next_q = max([self.get_q_value(next_state, a) for a in next_valid_moves])
             else:
                 max_next_q = 0
             target = total_reward + self.gamma * max_next_q
         
-        # Update
         new_q = current_q + self.lr * (target - current_q)
         self.q_table[(state, action)] = new_q
-        
-        # Store in model
         self.model[(state, action)] = (next_state, total_reward, done)
         
-        # Prioritized sweeping
         td_error = abs(target - current_q)
         if td_error > 0.1:
             self.prioritized_update(state, action, td_error)
-        
         return td_error
     
     def prioritized_update(self, state, action, priority, max_queue_size=1000):
@@ -252,21 +340,17 @@ class PureRLAgent:
         for _ in range(min(n_steps, len(self.priority_queue))):
             if not self.priority_queue:
                 break
-            
             _, state, action = heappop(self.priority_queue)
             self.in_queue.discard((state, action))
             
             if (state, action) in self.model:
                 next_state, reward, done = self.model[(state, action)]
                 current_q = self.get_q_value(state, action)
-                
                 if done:
                     target = reward
                 else:
-                    # We don't have valid moves stored, so assume all moves possible
                     max_next_q = max([self.get_q_value(next_state, a) for a in range(7)], default=0)
                     target = reward + self.gamma * max_next_q
-                
                 new_q = current_q + self.lr * (target - current_q)
                 self.q_table[(state, action)] = new_q
     
@@ -274,7 +358,6 @@ class PureRLAgent:
         """Learn from past experiences"""
         if len(self.experience_buffer) < batch_size:
             return
-        
         batch = random.sample(self.experience_buffer, batch_size)
         for state, action, reward, next_state, done, next_valid_moves in batch:
             self.update_q_value(state, action, reward, next_state, next_valid_moves, done)
@@ -284,13 +367,9 @@ class PureRLAgent:
         self.curiosity_weight = max(0.01, self.curiosity_weight * self.curiosity_decay)
     
     def record_result(self, result):
-        """Track game outcomes"""
-        if result == 'win':
-            self.wins += 1
-        elif result == 'loss':
-            self.losses += 1
-        elif result == 'draw':
-            self.draws += 1
+        if result == 'win': self.wins += 1
+        elif result == 'loss': self.losses += 1
+        elif result == 'draw': self.draws += 1
 
 # ============================================================================
 # Self-Play Training
@@ -500,6 +579,16 @@ with st.sidebar.expander("2. Agent Hyperparameters", expanded=True):
     gamma = st.slider("Discount Factor (γ)", 0.9, 0.999, 0.99, 0.001)
     epsilon_decay = st.slider("Epsilon Decay", 0.99, 0.9999, 0.9995, 0.0001, format="%.4f")
     epsilon_min = st.slider("Min Epsilon (ε)", 0.01, 0.3, 0.05, 0.01)
+    
+    st.markdown("---")
+    st.markdown("** AGI Thinking**")
+    minimax_depth = st.slider(
+        "Lookahead Depth", 
+        min_value=0, 
+        max_value=4, 
+        value=0, 
+        help="0 = Pure RL (Intuition), >0 = RL + Tree Search (Calculation)"
+    )
 
 with st.sidebar.expander("3. Training Configuration", expanded=True):
     episodes = st.number_input("Training Episodes", 100, 1000000, 5000, 100)
@@ -745,7 +834,15 @@ else:
                 if not valid_moves:
                     break
                 
-                action = agent.choose_action(state, valid_moves, training=False)
+                # UPDATED: Pass the game object and minimax depth!
+                action = agent.choose_action(
+                    state, 
+                    valid_moves, 
+                    training=False, 
+                    game_obj=test_game, 
+                    minimax_depth=minimax_depth
+                )
+                
                 state, reward, done, info = test_game.make_move(action)
                 play_history.append((test_game.board.copy(), current_player, action))
                 move_count += 1
