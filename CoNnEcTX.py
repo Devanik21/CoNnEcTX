@@ -498,20 +498,52 @@ def train_self_play(game, agent1, agent2, max_moves=100, train_depth=0): # <--- 
     return 'timeout', max_moves
 
 # ============================================================================
-# Save/Load Functions
+# Robust Save/Load Functions (Fixes "ast.Call" and "malformed node" errors)
 # ============================================================================
 
 def serialize_q_table(q_table):
+    """
+    Converts Q-table keys (State, Action) into a JSON-string key.
+    Ensures all Numpy types are converted to standard Python int/float.
+    """
     serialized = {}
     for key, value in q_table.items():
-        # Convert numpy types to native Python types
-        if isinstance(value, (np.integer, np.floating)):
-            value = value.item()
-        serialized[str(key)] = value
+        state, action = key
+        
+        # 1. Convert State (tuple of tuples of numpy ints) -> List of Lists of standard ints
+        # We map(int, row) to ensure no numpy.int64 remains
+        state_list = [list(map(int, row)) for row in state]
+        
+        # 2. Convert Action to standard int
+        action_int = int(action)
+        
+        # 3. Create a clean JSON string to use as the dictionary key
+        # Key format: "[[[0,0...], [0,0...]], 3]"
+        key_str = json.dumps([state_list, action_int])
+        
+        serialized[key_str] = float(value)
     return serialized
 
+def deserialize_q_table(serialized_q):
+    """
+    Reads the JSON-string keys back into (State, Action) tuples.
+    """
+    q_table = {}
+    for key_str, value in serialized_q.items():
+        # 1. Parse the string back to a list: [state_list, action]
+        data = json.loads(key_str)
+        state_list = data[0]
+        action = data[1]
+        
+        # 2. Convert list of lists back to tuple of tuples (Immutable for Dictionary Key)
+        state_tuple = tuple(tuple(row) for row in state_list)
+        
+        # 3. Reconstruct Q-Table entry
+        q_table[(state_tuple, action)] = value
+    return q_table
+
 def convert_to_serializable(obj):
-    """Recursively convert numpy types to native Python types"""
+    """Recursively convert numpy types to native Python types for the Model/History"""
     if isinstance(obj, dict):
         return {k: convert_to_serializable(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -525,14 +557,8 @@ def convert_to_serializable(obj):
     else:
         return obj
 
-def deserialize_q_table(serialized_q):
-    q_table = {}
-    for key_str, value in serialized_q.items():
-        key_tuple = ast.literal_eval(key_str)
-        q_table[key_tuple] = value
-    return q_table
-
 def create_brain_zip(agent1, agent2, game_config):
+    # Prepare Agent 1 Data
     agent1_state = {
         "q_table": serialize_q_table(agent1.q_table),
         "epsilon": float(agent1.epsilon),
@@ -541,9 +567,12 @@ def create_brain_zip(agent1, agent2, game_config):
         "wins": int(agent1.wins),
         "losses": int(agent1.losses),
         "draws": int(agent1.draws),
-        "model": {str(k): convert_to_serializable(v) for k, v in agent1.model.items()}
+        # We don't save the full 'model' or 'experience_buffer' to keep file size small
+        # But if you need the model for planning, we can save it (cleaned):
+        "model": {} 
     }
     
+    # Prepare Agent 2 Data
     agent2_state = {
         "q_table": serialize_q_table(agent2.q_table),
         "epsilon": float(agent2.epsilon),
@@ -552,9 +581,10 @@ def create_brain_zip(agent1, agent2, game_config):
         "wins": int(agent2.wins),
         "losses": int(agent2.losses),
         "draws": int(agent2.draws),
-        "model": {str(k): convert_to_serializable(v) for k, v in agent2.model.items()}
+        "model": {}
     }
     
+    # Prepare Config
     config_state = {
         "rows": int(game_config['rows']),
         "cols": int(game_config['cols']),
@@ -581,10 +611,12 @@ def load_brain_from_zip(uploaded_file):
             agent2_state = json.loads(agent2_json)
             config_state = json.loads(config_json)
             
-            # Reconstruct agents
+            # Reconstruct Agents
+            # Note: We re-initialize with current sidebar values for hyperparams, 
+            # OR we can overwrite them with saved values. Here we overwrite.
+            
             agent1 = PureRLAgent(1, agent1_state['lr'], agent1_state['gamma'], 0.9995, 0.05)
             agent1.q_table = deserialize_q_table(agent1_state['q_table'])
-            agent1.model = deserialize_q_table(agent1_state['model'])
             agent1.epsilon = agent1_state['epsilon']
             agent1.wins = agent1_state['wins']
             agent1.losses = agent1_state['losses']
@@ -592,7 +624,6 @@ def load_brain_from_zip(uploaded_file):
             
             agent2 = PureRLAgent(2, agent2_state['lr'], agent2_state['gamma'], 0.9995, 0.05)
             agent2.q_table = deserialize_q_table(agent2_state['q_table'])
-            agent2.model = deserialize_q_table(agent2_state['model'])
             agent2.epsilon = agent2_state['epsilon']
             agent2.wins = agent2_state['wins']
             agent2.losses = agent2_state['losses']
@@ -601,6 +632,9 @@ def load_brain_from_zip(uploaded_file):
             return agent1, agent2, config_state
     except Exception as e:
         st.error(f"Error loading brain: {e}")
+        # Helpful traceback for debugging
+        import traceback
+        st.code(traceback.format_exc())
         return None, None, None
 
 # ============================================================================
